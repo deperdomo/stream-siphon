@@ -9,12 +9,9 @@ from typing import Optional
 from downloader import YouTubeDownloader, VideoInfo, DownloadResult
 from utils import (
     validar_url, es_url_youtube, formatear_duracion, 
-    formatear_tamaño, limpiar_titulo, obtener_calidad_desde_altura
+    formatear_tamaño, limpiar_titulo
 )
-from config import Config
-from cleanup_scheduler import cleanup_scheduler
-from error_handler import error_handler, YouTubeDownloaderError, URLError, DownloadError
-from performance_optimizer import performance_optimizer, optimize_performance, cached_video_info
+from error_handler import ErrorHandler, error_handler, DownloadError
 
 # Configuración de la página
 st.set_page_config(
@@ -139,22 +136,7 @@ if 'progress' not in st.session_state:
 if 'download_status' not in st.session_state:
     st.session_state.download_status = None
     
-if 'cleanup_scheduler_started' not in st.session_state:
-    st.session_state.cleanup_scheduler_started = False
 
-if 'performance_optimizer_started' not in st.session_state:
-    st.session_state.performance_optimizer_started = False
-
-# Inicializar el programador de limpieza automática
-if not st.session_state.cleanup_scheduler_started:
-    cleanup_scheduler.ensure_temp_dir()
-    cleanup_scheduler.start_scheduler()
-    st.session_state.cleanup_scheduler_started = True
-
-# Inicializar performance optimizer
-if not st.session_state.performance_optimizer_started:
-    performance_optimizer.start_optimization()
-    st.session_state.performance_optimizer_started = True
 
 def mostrar_header():
     """Muestra el header principal de la aplicación"""
@@ -209,7 +191,7 @@ def mostrar_formulario_entrada():
         help="Pega aquí la URL del video de YouTube que quieres descargar"
     )
     
-    col1, col2 = st.columns([3, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
         if st.button("🔍 Obtener información del video", type="primary", use_container_width=True):
@@ -263,6 +245,102 @@ def mostrar_formulario_entrada():
             st.session_state.download_status = None
             st.session_state.progress = 0
             st.rerun()
+    
+    with col3:
+        # Selectbox pequeño para elegir tipo de descarga
+        tipo_descarga_rapida = st.selectbox(
+            "Tipo",
+            ["Video", "Audio"],
+            help="Selecciona el tipo de descarga rápida",
+            key="tipo_descarga_rapida"
+        )
+        
+        if st.button("📥 Descarga Rápida", use_container_width=True, help="Descargar directamente sin obtener información previa"):
+            if not url:
+                error_handler.display_warning("Por favor ingresa una URL")
+                return
+            
+            if not validar_url(url):
+                error_handler.display_error({
+                    'error_type': 'url_error',
+                    'message': 'URL inválida. Debe comenzar con http:// o https://',
+                    'details': {'url': url}
+                })
+                return
+            
+            if not es_url_youtube(url):
+                error_handler.display_warning(
+                    "La URL no parece ser de YouTube. Puede que funcione, pero se recomienda usar URLs de YouTube.",
+                    ["Verifica que sea una URL de YouTube válida", "Algunas plataformas pueden tener limitaciones"]
+                )
+            
+            # Configurar la URL actual y tipo de descarga
+            st.session_state.current_url = url
+            st.session_state.downloading = True
+            st.session_state.progress = 0
+            st.session_state.download_status = "Iniciando descarga rápida..."
+            
+            def progress_callback(d):
+                try:
+                    status = d.get('status', '')
+                    if status == 'downloading':
+                        if 'total_bytes' in d and d['total_bytes']:
+                            progress = (d['downloaded_bytes'] / d['total_bytes']) * 100
+                            st.session_state.progress = min(progress, 100)
+                            st.session_state.download_status = f"Descargando... {progress:.1f}%"
+                        elif '_percent_str' in d:
+                            percent_str = d['_percent_str'].strip().replace('%', '')
+                            try:
+                                progress = float(percent_str)
+                                st.session_state.progress = min(progress, 100)
+                                st.session_state.download_status = f"Descargando... {progress:.1f}%"
+                            except:
+                                st.session_state.download_status = "Descargando..."
+                        else:
+                            st.session_state.download_status = "Descargando..."
+                    elif status == 'finished':
+                        st.session_state.progress = 100
+                        st.session_state.download_status = "Finalizando..."
+                        if 'filename' in d:
+                            st.session_state.filename = d['filename']
+                except Exception as e:
+                    # Evitar que errores en el callback interrumpan la descarga
+                    pass
+            
+            with st.spinner(f"Descargando {tipo_descarga_rapida.lower()}..."):
+                try:
+                    # Configurar el callback de progreso
+                    st.session_state.downloader.set_progress_callback(progress_callback)
+                    
+                    if tipo_descarga_rapida == "Video":
+                        # Descarga de video con calidad automática
+                        resultado = st.session_state.downloader.descargar_video(url)
+                    else:
+                        # Descarga de audio
+                        resultado = st.session_state.downloader.descargar_audio(url)
+                    
+                    st.session_state.download_result = resultado
+                    st.session_state.downloading = False
+                    
+                    if resultado.exito:
+                        error_handler.display_success(
+                            f"{tipo_descarga_rapida} descargado exitosamente",
+                            {
+                                'Archivo': os.path.basename(resultado.archivo_descargado),
+                                'Tamaño': formatear_tamaño(resultado.tamaño_final) if resultado.tamaño_final else 'N/A',
+                                'Tiempo': f"{resultado.tiempo_descarga:.1f}s" if resultado.tiempo_descarga else 'N/A',
+                                'Calidad': resultado.calidad_final if resultado.calidad_final else 'N/A'
+                            }
+                        )
+                        st.rerun()
+                    else:
+                        raise DownloadError(resultado.mensaje or "Error desconocido durante la descarga")
+                        
+                except Exception as e:
+                    st.session_state.downloading = False
+                    error_info = error_handler.handle_error(e, "descarga_rapida")
+                    error_handler.display_error(error_info)
+                    st.session_state.download_result = None
 
 def mostrar_info_video(video_info: VideoInfo):
     """Muestra la información del video"""
@@ -287,7 +365,7 @@ def mostrar_info_video(video_info: VideoInfo):
     with col2:
         if video_info.thumbnail:
             try:
-                st.image(video_info.thumbnail, caption="Miniatura del video", use_column_width=True)
+                st.image(video_info.thumbnail, caption="Miniatura del video", use_container_width=True)
             except:
                 st.info("Miniatura no disponible")
         
@@ -324,7 +402,6 @@ def mostrar_opciones_descarga():
     
     return tipo_descarga, calidad
 
-@optimize_performance
 def realizar_descarga_video():
     """Realiza la descarga de video"""
     if not st.session_state.current_url:
@@ -340,29 +417,38 @@ def realizar_descarga_video():
     st.session_state.download_status = "Iniciando descarga..."
     
     def progress_callback(d):
-        if d['status'] == 'downloading':
-            if 'total_bytes' in d and d['total_bytes']:
-                progress = (d['downloaded_bytes'] / d['total_bytes']) * 100
-                st.session_state.progress = min(progress, 100)
-                st.session_state.download_status = f"Descargando... {progress:.1f}%"
-            elif '_percent_str' in d:
-                percent_str = d['_percent_str'].strip().replace('%', '')
-                try:
-                    progress = float(percent_str)
+        try:
+            status = d.get('status', '')
+            if status == 'downloading':
+                if 'total_bytes' in d and d['total_bytes']:
+                    progress = (d['downloaded_bytes'] / d['total_bytes']) * 100
                     st.session_state.progress = min(progress, 100)
                     st.session_state.download_status = f"Descargando... {progress:.1f}%"
-                except:
+                elif '_percent_str' in d:
+                    percent_str = d['_percent_str'].strip().replace('%', '')
+                    try:
+                        progress = float(percent_str)
+                        st.session_state.progress = min(progress, 100)
+                        st.session_state.download_status = f"Descargando... {progress:.1f}%"
+                    except:
+                        st.session_state.download_status = "Descargando..."
+                else:
                     st.session_state.download_status = "Descargando..."
-        elif d['status'] == 'finished':
-            st.session_state.progress = 100
-            st.session_state.download_status = "Finalizando..."
-            if 'filename' in d:
-                st.session_state.filename = d['filename']
+            elif status == 'finished':
+                st.session_state.progress = 100
+                st.session_state.download_status = "Finalizando..."
+                if 'filename' in d:
+                    st.session_state.filename = d['filename']
+        except Exception as e:
+            # Evitar que errores en el callback interrumpan la descarga
+            pass
     
     try:
+        # Configurar el callback de progreso
+        st.session_state.downloader.set_progress_callback(progress_callback)
+        
         resultado = st.session_state.downloader.descargar_video(
-            st.session_state.current_url,
-            progress_hook=progress_callback
+            st.session_state.current_url
         )
         
         st.session_state.download_result = resultado
@@ -387,7 +473,6 @@ def realizar_descarga_video():
         error_handler.display_error(error_info)
         st.session_state.download_result = None
 
-@optimize_performance
 def realizar_descarga_audio():
     """Realiza la descarga de audio"""
     if not st.session_state.current_url:
@@ -403,29 +488,38 @@ def realizar_descarga_audio():
     st.session_state.download_status = "Iniciando descarga de audio..."
     
     def progress_callback(d):
-        if d['status'] == 'downloading':
-            if 'total_bytes' in d and d['total_bytes']:
-                progress = (d['downloaded_bytes'] / d['total_bytes']) * 100
-                st.session_state.progress = min(progress, 100)
-                st.session_state.download_status = f"Descargando audio... {progress:.1f}%"
-            elif '_percent_str' in d:
-                percent_str = d['_percent_str'].strip().replace('%', '')
-                try:
-                    progress = float(percent_str)
+        try:
+            status = d.get('status', '')
+            if status == 'downloading':
+                if 'total_bytes' in d and d['total_bytes']:
+                    progress = (d['downloaded_bytes'] / d['total_bytes']) * 100
                     st.session_state.progress = min(progress, 100)
                     st.session_state.download_status = f"Descargando audio... {progress:.1f}%"
-                except:
+                elif '_percent_str' in d:
+                    percent_str = d['_percent_str'].strip().replace('%', '')
+                    try:
+                        progress = float(percent_str)
+                        st.session_state.progress = min(progress, 100)
+                        st.session_state.download_status = f"Descargando audio... {progress:.1f}%"
+                    except:
+                        st.session_state.download_status = "Descargando audio..."
+                else:
                     st.session_state.download_status = "Descargando audio..."
-        elif d['status'] == 'finished':
-            st.session_state.progress = 100
-            st.session_state.download_status = "Finalizando..."
-            if 'filename' in d:
-                st.session_state.filename = d['filename']
+            elif status == 'finished':
+                st.session_state.progress = 100
+                st.session_state.download_status = "Finalizando..."
+                if 'filename' in d:
+                    st.session_state.filename = d['filename']
+        except Exception as e:
+            # Evitar que errores en el callback interrumpan la descarga
+            pass
     
     try:
+        # Configurar el callback de progreso
+        st.session_state.downloader.set_progress_callback(progress_callback)
+        
         resultado = st.session_state.downloader.descargar_audio(
-            st.session_state.current_url,
-            progress_hook=progress_callback
+            st.session_state.current_url
         )
         
         st.session_state.download_result = resultado
@@ -540,159 +634,7 @@ def mostrar_area_descarga(tipo_descarga: str, calidad: str):
         progress_bar = st.progress(st.session_state.progress / 100)
         st.text(f"Progreso: {st.session_state.progress:.1f}%")
 
-def mostrar_sidebar():
-    """Muestra la barra lateral con información del sistema"""
-    with st.sidebar:
-        st.markdown("### 🔧 Estado del Sistema")
-        
-        # Estado del programador de limpieza
-        if cleanup_scheduler.running:
-            st.success("✅ Limpieza automática activa")
-        else:
-            st.warning("⚠️ Limpieza automática inactiva")
-        
-        # Estado del optimizador de rendimiento
-        if performance_optimizer.optimization_active:
-            st.success("✅ Optimización de rendimiento activa")
-        else:
-            st.warning("⚠️ Optimización de rendimiento inactiva")
-        
-        # Información del sistema
-        system_info = performance_optimizer.get_system_info()
-        st.markdown("### 📊 Recursos del Sistema")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("CPU", f"{system_info['cpu_percent']:.1f}%")
-            st.metric("Memoria", f"{system_info['memory_percent']:.1f}%")
-        with col2:
-            st.metric("RAM libre", f"{system_info['memory_available_gb']:.1f} GB")
-            st.metric("Disco libre", f"{system_info['disk_free_gb']:.1f} GB")
-        
-        # Botón de optimización manual
-        if st.button("🚀 Optimizar rendimiento", help="Liberar memoria y optimizar recursos"):
-            try:
-                optimization_result = performance_optimizer.optimize_memory()
-                if optimization_result['freed_memory_mb'] > 0:
-                    error_handler.display_success(
-                        "Optimización completada",
-                        f"Se liberaron {optimization_result['freed_memory_mb']:.1f} MB de memoria"
-                    )
-                else:
-                    error_handler.display_info("El sistema ya está optimizado")
-                st.rerun()
-            except Exception as e:
-                error_handler.display_error(
-                    "Error en optimización",
-                    "No se pudo completar la optimización del sistema",
-                    ["Intenta cerrar otras aplicaciones", "Reinicia la aplicación si persiste"],
-                    str(e)
-                )
-        
-        # Información del directorio temporal
-        temp_info = cleanup_scheduler.get_temp_dir_info()
-        st.markdown("### 🗂️ Archivos Temporales")
-        st.info(f"📁 Archivos: {temp_info['total_files']}")
-        st.info(f"💾 Espacio: {temp_info['total_size_formatted']}")
-        
-        # Botones de limpieza manual
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("🧹 Limpiar antiguos", help="Eliminar archivos de más de 24 horas"):
-                try:
-                    stats = cleanup_scheduler.cleanup_old_files()
-                    if stats['files_cleaned'] > 0:
-                        error_handler.display_success(
-                            "Limpieza completada",
-                            f"Se eliminaron {stats['files_cleaned']} archivos y se liberaron {formatear_tamaño(stats['size_cleaned'])}"
-                        )
-                    else:
-                        error_handler.display_info("No hay archivos antiguos para limpiar")
-                    st.rerun()
-                except Exception as e:
-                    error_handler.display_error(
-                        "Error en limpieza",
-                        "No se pudo completar la limpieza de archivos antiguos",
-                        ["Verifica los permisos del directorio", "Intenta reiniciar la aplicación"],
-                        str(e)
-                    )
-        
-        with col2:
-            if st.button("🗑️ Limpiar todo", help="Eliminar todos los archivos temporales"):
-                try:
-                    stats = cleanup_scheduler.cleanup_all_temp_files()
-                    if stats['files_cleaned'] > 0:
-                        error_handler.display_success(
-                            "Limpieza total completada",
-                            f"Se eliminaron {stats['files_cleaned']} archivos y se liberaron {formatear_tamaño(stats['size_cleaned'])}"
-                        )
-                    else:
-                        error_handler.display_info("No hay archivos temporales para limpiar")
-                    st.rerun()
-                except Exception as e:
-                    error_handler.display_error(
-                        "Error en limpieza total",
-                        "No se pudo completar la limpieza de todos los archivos",
-                        ["Verifica los permisos del directorio", "Cierra otros programas que puedan estar usando los archivos"],
-                        str(e)
-                    )
-        
-        # Estadísticas de limpieza
-        cleanup_stats = cleanup_scheduler.get_cleanup_stats()
-        st.markdown("---")
-        st.markdown("### 📈 Estadísticas")
-        
-        # Estadísticas de limpieza
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Archivos limpiados", cleanup_stats['total_files_cleaned'])
-        with col2:
-            st.metric("Espacio liberado", cleanup_stats['total_size_cleaned_formatted'])
-        
-        if cleanup_stats['last_cleanup']:
-            st.info(f"🕒 Última limpieza: {cleanup_stats['last_cleanup'].strftime('%H:%M:%S')}")
-        
-        # Estadísticas de rendimiento
-        perf_stats = performance_optimizer.get_performance_stats()
-        memory_stats = perf_stats['memory_stats']
-        
-        st.metric("Memoria de la app", f"{memory_stats['current']['rss_mb']:.1f} MB")
-        if memory_stats['increase_mb'] > 0:
-            st.metric("Incremento de memoria", f"+{memory_stats['increase_mb']:.1f} MB")
-        
-        st.markdown("---")
-        st.markdown("### ℹ️ Información")
-        
-        # Información sobre formatos soportados
-        with st.expander("📹 Formatos soportados"):
-            st.write("**Video:** MP4, WEBM, MKV")
-            st.write("**Audio:** MP3, M4A, WEBM")
-            st.write("**Calidades:** 4K, 1440p, 1080p, 720p, 480p, 360p")
-        
-        # Información sobre plataformas
-        with st.expander("🌐 Plataformas compatibles"):
-            st.write("• YouTube")
-            st.write("• YouTube Music")
-            st.write("• Y muchas más...")
-        
-        # Características principales
-        with st.expander("⭐ Características"):
-            st.write("• Descarga de videos hasta 8K")
-            st.write("• Extracción de audio MP3")
-            st.write("• Descarga con audio integrado")
-            st.write("• Limpieza automática cada hora")
-            st.write("• Optimización de rendimiento")
-            st.write("• Interfaz web intuitiva")
-        
-        # Consejos de uso
-        with st.expander("💡 Consejos"):
-            st.write("• Usa URLs completas de YouTube")
-            st.write("• Para mejor calidad, elige MP4")
-            st.write("• La limpieza automática se ejecuta cada hora")
-            st.write("• Los archivos se guardan en 'descargas/'")
-            st.write("• Optimiza el rendimiento si el sistema está lento")
-            st.write("• Revisa el espacio disponible regularmente")
+
 
 def main():
     """Función principal de la aplicación"""
@@ -701,9 +643,6 @@ def main():
     
     # Características
     mostrar_caracteristicas()
-    
-    # Sidebar
-    mostrar_sidebar()
     
     # Formulario de entrada
     mostrar_formulario_entrada()

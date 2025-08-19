@@ -9,7 +9,6 @@ yt-dlp>=2023.10.13
 
 # Utilidades de sistema y archivos
 # os-sys>=2.1.4  # Removido por conflictos de dependencias
-psutil>=5.9.0
 
 # Manejo de URLs y validación
 requests>=2.31.0

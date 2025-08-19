@@ -63,34 +63,42 @@ class ProgressHook:
         self.eta = 0
         
     def __call__(self, d):
-        if d['status'] == 'downloading':
-            if 'total_bytes' in d:
-                self.tamaño_total = d['total_bytes']
-            elif 'total_bytes_estimate' in d:
-                self.tamaño_total = d['total_bytes_estimate']
+        try:
+            status = d.get('status', '')
+            if status == 'downloading':
+                if 'total_bytes' in d:
+                    self.tamaño_total = d['total_bytes']
+                elif 'total_bytes_estimate' in d:
+                    self.tamaño_total = d['total_bytes_estimate']
+                    
+                if 'downloaded_bytes' in d and self.tamaño_total > 0:
+                    self.progreso_actual = (d['downloaded_bytes'] / self.tamaño_total) * 100
+                    
+                self.velocidad = d.get('speed', 0) or 0
+                self.eta = d.get('eta', 0) or 0
                 
-            if 'downloaded_bytes' in d and self.tamaño_total > 0:
-                self.progreso_actual = (d['downloaded_bytes'] / self.tamaño_total) * 100
-                
-            self.velocidad = d.get('speed', 0) or 0
-            self.eta = d.get('eta', 0) or 0
-            
-            if self.callback:
-                self.callback({
-                    'progreso': self.progreso_actual,
-                    'tamaño_total': self.tamaño_total,
-                    'velocidad': self.velocidad,
-                    'eta': self.eta,
-                    'estado': 'descargando'
-                })
-        elif d['status'] == 'finished':
-            self.progreso_actual = 100
-            if self.callback:
-                self.callback({
-                    'progreso': 100,
-                    'estado': 'completado',
-                    'archivo': d.get('filename', '')
-                })
+                if self.callback:
+                    self.callback({
+                        'status': 'downloading',
+                        'progreso': self.progreso_actual,
+                        'tamaño_total': self.tamaño_total,
+                        'velocidad': self.velocidad,
+                        'eta': self.eta,
+                        'downloaded_bytes': d.get('downloaded_bytes', 0),
+                        'total_bytes': self.tamaño_total,
+                        '_percent_str': f"{self.progreso_actual:.1f}%"
+                    })
+            elif status == 'finished':
+                self.progreso_actual = 100
+                if self.callback:
+                    self.callback({
+                        'status': 'finished',
+                        'progreso': 100,
+                        'filename': d.get('filename', '')
+                    })
+        except Exception as e:
+            # Evitar que errores en el hook interrumpan la descarga
+            pass
 
 class YouTubeDownloader:
     """Clase principal para manejar descargas de YouTube"""
@@ -256,24 +264,21 @@ class YouTubeDownloader:
                 # Descargar
                 ydl.download([url])
                 
-                # Buscar archivo descargado
-                nombre_archivo = generar_nombre_archivo_seguro(
-                    titulo, 'mp4', f"{info.get('height', 'unknown')}p"
-                )
-                ruta_archivo = os.path.join(self.directorio_descarga, nombre_archivo)
+                # Buscar archivo descargado más reciente en el directorio
+                archivos_mp4 = []
+                if os.path.exists(self.directorio_descarga):
+                    for archivo in os.listdir(self.directorio_descarga):
+                        if archivo.endswith('.mp4'):
+                            ruta_completa = os.path.join(self.directorio_descarga, archivo)
+                            archivos_mp4.append((ruta_completa, os.path.getmtime(ruta_completa)))
                 
-                # Verificar si existe el archivo
-                if os.path.exists(ruta_archivo):
+                if archivos_mp4:
+                    # Ordenar por tiempo de modificación (más reciente primero)
+                    archivos_mp4.sort(key=lambda x: x[1], reverse=True)
+                    ruta_archivo = archivos_mp4[0][0]
                     tamaño = os.path.getsize(ruta_archivo)
                 else:
-                    # Buscar archivos similares en el directorio
-                    archivos = [f for f in os.listdir(self.directorio_descarga) 
-                              if titulo[:20] in f and f.endswith('.mp4')]
-                    if archivos:
-                        ruta_archivo = os.path.join(self.directorio_descarga, archivos[0])
-                        tamaño = os.path.getsize(ruta_archivo)
-                    else:
-                        tamaño = 0
+                    raise FileNotFoundError("No se encontró el archivo descargado")
                 
                 tiempo_total = time.time() - inicio
                 
@@ -323,23 +328,22 @@ class YouTubeDownloader:
                 # Descargar
                 ydl.download([url])
                 
-                # Buscar archivo descargado
+                # Buscar archivo descargado más reciente en el directorio
                 extension = 'mp3' if self.ffmpeg_disponible else 'm4a'
-                nombre_archivo = generar_nombre_archivo_seguro(titulo, extension)
-                ruta_archivo = os.path.join(self.directorio_descarga, nombre_archivo)
+                archivos_audio = []
+                if os.path.exists(self.directorio_descarga):
+                    for archivo in os.listdir(self.directorio_descarga):
+                        if archivo.endswith(('.mp3', '.m4a', '.aac')):
+                            ruta_completa = os.path.join(self.directorio_descarga, archivo)
+                            archivos_audio.append((ruta_completa, os.path.getmtime(ruta_completa)))
                 
-                # Verificar si existe el archivo
-                if os.path.exists(ruta_archivo):
+                if archivos_audio:
+                    # Ordenar por tiempo de modificación (más reciente primero)
+                    archivos_audio.sort(key=lambda x: x[1], reverse=True)
+                    ruta_archivo = archivos_audio[0][0]
                     tamaño = os.path.getsize(ruta_archivo)
                 else:
-                    # Buscar archivos similares en el directorio
-                    archivos = [f for f in os.listdir(self.directorio_descarga) 
-                              if titulo[:20] in f and (f.endswith('.mp3') or f.endswith('.m4a'))]
-                    if archivos:
-                        ruta_archivo = os.path.join(self.directorio_descarga, archivos[0])
-                        tamaño = os.path.getsize(ruta_archivo)
-                    else:
-                        tamaño = 0
+                    raise FileNotFoundError("No se encontró el archivo de audio descargado")
                 
                 tiempo_total = time.time() - inicio
                 
