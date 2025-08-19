@@ -1,0 +1,42 @@
+# YouTube Downloader Web - Dependencias
+# Instalación: pip install -r requirements.txt
+
+# Framework web principal
+streamlit>=1.28.0
+
+# Descarga de videos
+yt-dlp>=2023.10.13
+
+# Utilidades de sistema y archivos
+# os-sys>=2.1.4  # Removido por conflictos de dependencias
+psutil>=5.9.0
+
+# Manejo de URLs y validación
+requests>=2.31.0
+validators>=0.22.0
+
+# Procesamiento de datos
+pandas>=2.1.0
+numpy>=1.24.0
+
+# Manejo de fechas y tiempo
+python-dateutil>=2.8.2
+
+# Logging y debugging
+loguru>=0.7.2
+
+# Procesamiento de archivos multimedia (opcional pero recomendado)
+# Nota: FFmpeg debe instalarse por separado en el sistema
+# Windows: https://ffmpeg.org/download.html
+# Linux: sudo apt install ffmpeg
+# macOS: brew install ffmpeg
+
+# Utilidades adicionales
+pathos>=0.1.2
+click>=8.1.0
+
+# Para manejo de configuraciones
+python-dotenv>=1.0.0
+
+# Utilidades de typing
+typing-extensions>=4.8.0
