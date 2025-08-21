@@ -212,3 +212,6 @@ Una aplicación web limpia e intuitiva que:
 ---
 
 **Nota para el agente**: Este README proporciona una hoja de ruta completa. Comenzar con una implementación básica y luego iterar añadiendo características avanzadas.
+
+# Arranque de la Aplicación
+`python -m streamlit run app.py`

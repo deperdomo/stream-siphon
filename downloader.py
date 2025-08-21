@@ -185,38 +185,36 @@ class YouTubeDownloader:
         }
     
     def _obtener_opciones_video(self, calidad: str = 'auto') -> Dict:
-        """Obtiene las opciones de yt-dlp para descarga de video"""
+        """Obtiene las opciones de yt-dlp para descarga de video con máxima calidad"""
         opciones_base = Config.YT_DLP_OPTIONS.copy()
         
         if self.ffmpeg_disponible:
-            # Con ffmpeg - video + audio separados y merge
+            # Con ffmpeg - video + audio separados y merge para máxima calidad
             if calidad == '4k':
-                formato = Config.VIDEO_FORMATS_WITH_FFMPEG['4k']
+                formato = 'bestvideo[height<=2160][fps<=60]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/bestvideo+bestaudio/best'
             elif calidad == '1440p':
-                formato = Config.VIDEO_FORMATS_WITH_FFMPEG['1440p']
+                formato = 'bestvideo[height<=1440][fps<=60]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/bestvideo+bestaudio/best'
             elif calidad == '1080p':
-                formato = Config.VIDEO_FORMATS_WITH_FFMPEG['1080p']
+                formato = 'bestvideo[height<=1080][fps<=60]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/bestvideo+bestaudio/best'
             elif calidad == '720p':
-                formato = Config.VIDEO_FORMATS_WITH_FFMPEG['720p']
+                formato = 'bestvideo[height<=720][fps<=60]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/bestvideo+bestaudio/best'
             else:
-                formato = Config.VIDEO_FORMATS_WITH_FFMPEG['auto']
+                formato = 'bestvideo[fps<=60]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
             
             opciones_base.update({
                 'format': formato,
                 'merge_output_format': 'mp4',
+                'writesubtitles': False,  # No descargar subtítulos para evitar errores
+                'writeautomaticsub': False,
             })
         else:
-            # Sin ffmpeg - formato único
-            if calidad == '4k':
-                formato = Config.VIDEO_FORMATS_NO_FFMPEG['4k']
-            elif calidad == '1440p':
-                formato = Config.VIDEO_FORMATS_NO_FFMPEG['1440p']
-            elif calidad == '1080p':
-                formato = Config.VIDEO_FORMATS_NO_FFMPEG['1080p']
+            # Sin ffmpeg - formato único con mejor calidad disponible
+            if calidad in ['4k', '1440p', '1080p']:
+                formato = f'best[height<={calidad[:-1]}]/best'
             elif calidad == '720p':
-                formato = Config.VIDEO_FORMATS_NO_FFMPEG['720p']
+                formato = 'best[height<=720]/best'
             else:
-                formato = Config.VIDEO_FORMATS_NO_FFMPEG['auto']
+                formato = 'best'
             
             opciones_base.update({
                 'format': formato,
@@ -313,59 +311,148 @@ class YouTubeDownloader:
             )
     
     def descargar_audio(self, url: str) -> DownloadResult:
-        """Descarga solo audio/podcast"""
+        """Descarga solo audio/podcast en la mejor calidad disponible"""
         import time
         inicio = time.time()
         
         try:
-            opciones = self._obtener_opciones_audio()
+            # Intentar con configuración de máxima calidad primero
+            opciones_alta_calidad = Config.YT_DLP_OPTIONS.copy()
+            opciones_alta_calidad.update({
+                'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best[abr>128]/best',
+                'outtmpl': os.path.join(self.directorio_descarga, '%(title)s.%(ext)s'),
+            })
             
-            with yt_dlp.YoutubeDL(opciones) as ydl:
-                # Extraer info primero
-                info = ydl.extract_info(url, download=False)
-                titulo = info.get('title', 'audio_sin_titulo')
-                
-                # Descargar
-                ydl.download([url])
-                
-                # Buscar archivo descargado más reciente en el directorio
-                extension = 'mp3' if self.ffmpeg_disponible else 'm4a'
-                archivos_audio = []
-                if os.path.exists(self.directorio_descarga):
-                    for archivo in os.listdir(self.directorio_descarga):
-                        if archivo.endswith(('.mp3', '.m4a', '.aac')):
-                            ruta_completa = os.path.join(self.directorio_descarga, archivo)
-                            archivos_audio.append((ruta_completa, os.path.getmtime(ruta_completa)))
-                
-                if archivos_audio:
-                    # Ordenar por tiempo de modificación (más reciente primero)
-                    archivos_audio.sort(key=lambda x: x[1], reverse=True)
-                    ruta_archivo = archivos_audio[0][0]
-                    tamaño = os.path.getsize(ruta_archivo)
-                else:
-                    raise FileNotFoundError("No se encontró el archivo de audio descargado")
-                
+            if self.progress_hook:
+                opciones_alta_calidad['progress_hooks'] = [self.progress_hook]
+            
+            info = None
+            archivo_descargado = None
+            
+            with yt_dlp.YoutubeDL(opciones_alta_calidad) as ydl:
+                try:
+                    # Extraer info
+                    info = ydl.extract_info(url, download=False)
+                    if info is None:
+                        raise Exception("No se pudo extraer información del video")
+                    
+                    # Descargar
+                    ydl.download([url])
+                    
+                    # Buscar archivo descargado más reciente
+                    archivos_audio = []
+                    if os.path.exists(self.directorio_descarga):
+                        for archivo in os.listdir(self.directorio_descarga):
+                            if archivo.endswith(('.mp3', '.m4a', '.aac', '.mp4', '.webm', '.mkv')):
+                                ruta_completa = os.path.join(self.directorio_descarga, archivo)
+                                archivos_audio.append((ruta_completa, os.path.getmtime(ruta_completa)))
+                    
+                    if archivos_audio:
+                        archivos_audio.sort(key=lambda x: x[1], reverse=True)
+                        archivo_descargado = archivos_audio[0][0]
+                        
+                        # Si FFmpeg está disponible, convertir a MP3 de alta calidad
+                        if self.ffmpeg_disponible and not archivo_descargado.endswith('.mp3'):
+                            try:
+                                import subprocess
+                                nombre_base = os.path.splitext(archivo_descargado)[0]
+                                archivo_mp3 = f"{nombre_base}.mp3"
+                                
+                                # Usar configuración de alta calidad para MP3
+                                subprocess.run([
+                                    'ffmpeg', '-i', archivo_descargado, 
+                                    '-b:a', '320k',  # Bitrate de 320 kbps para máxima calidad
+                                    '-y', archivo_mp3
+                                ], check=True, capture_output=True)
+                                
+                                # Eliminar archivo original si la conversión fue exitosa
+                                if os.path.exists(archivo_mp3):
+                                    os.remove(archivo_descargado)
+                                    archivo_descargado = archivo_mp3
+                            except:
+                                pass  # Si falla la conversión, mantener archivo original
+                        
+                    else:
+                        raise FileNotFoundError("No se encontró el archivo de audio descargado")
+                        
+                except Exception as e:
+                    # Si falla, intentar con formato más básico pero estable
+                    opciones_fallback = {
+                        'format': 'best[abr]/best',
+                        'outtmpl': os.path.join(self.directorio_descarga, '%(title)s.%(ext)s'),
+                        'ignoreerrors': True,
+                        'no_warnings': True,
+                    }
+                    
+                    with yt_dlp.YoutubeDL(opciones_fallback) as ydl_fallback:
+                        info = ydl_fallback.extract_info(url, download=False)
+                        if info is None:
+                            raise Exception("No se pudo extraer información del video incluso con fallback")
+                        
+                        ydl_fallback.download([url])
+                        
+                        # Buscar archivo descargado
+                        archivos_audio = []
+                        if os.path.exists(self.directorio_descarga):
+                            for archivo in os.listdir(self.directorio_descarga):
+                                if archivo.endswith(('.mp3', '.m4a', '.aac', '.mp4', '.webm', '.mkv')):
+                                    ruta_completa = os.path.join(self.directorio_descarga, archivo)
+                                    archivos_audio.append((ruta_completa, os.path.getmtime(ruta_completa)))
+                        
+                        if archivos_audio:
+                            archivos_audio.sort(key=lambda x: x[1], reverse=True)
+                            archivo_descargado = archivos_audio[0][0]
+                        else:
+                            raise FileNotFoundError("No se encontró el archivo de audio descargado (fallback)")
+            
+            if archivo_descargado and os.path.exists(archivo_descargado):
+                tamaño = os.path.getsize(archivo_descargado)
                 tiempo_total = time.time() - inicio
+                
+                # Determinar calidad del audio
+                calidad_str = "unknown"
+                if info:
+                    abr = info.get('abr', None)
+                    if abr:
+                        calidad_str = f"{abr}kbps"
+                    elif archivo_descargado.endswith('.mp3'):
+                        calidad_str = "320kbps (convertido)"
+                    elif archivo_descargado.endswith('.m4a'):
+                        calidad_str = "Alta calidad (m4a)"
                 
                 return DownloadResult(
                     exito=True,
-                    archivo_descargado=ruta_archivo,
+                    archivo_descargado=archivo_descargado,
                     tamaño_final=tamaño,
                     tiempo_descarga=tiempo_total,
-                    calidad_final=f"{info.get('abr', 'unknown')}kbps",
-                    mensaje="Audio descargado exitosamente"
+                    calidad_final=calidad_str,
+                    mensaje="Audio descargado exitosamente en máxima calidad"
                 )
+            else:
+                raise FileNotFoundError("Archivo no encontrado después de descarga")
                 
         except yt_dlp.utils.DownloadError as e:
-            return DownloadResult(
-                exito=False,
-                archivo_descargado="",
-                tamaño_final=0,
-                tiempo_descarga=time.time() - inicio,
-                calidad_final="",
-                mensaje="Error de descarga",
-                error=str(e)
-            )
+            error_msg = str(e)
+            if "403" in error_msg or "Forbidden" in error_msg:
+                return DownloadResult(
+                    exito=False,
+                    archivo_descargado="",
+                    tamaño_final=0,
+                    tiempo_descarga=time.time() - inicio,
+                    calidad_final="",
+                    mensaje="Error de acceso - intenta con otro video",
+                    error="HTTP 403: Acceso denegado por YouTube"
+                )
+            else:
+                return DownloadResult(
+                    exito=False,
+                    archivo_descargado="",
+                    tamaño_final=0,
+                    tiempo_descarga=time.time() - inicio,
+                    calidad_final="",
+                    mensaje="Error de descarga",
+                    error=str(e)
+                )
         except Exception as e:
             return DownloadResult(
                 exito=False,

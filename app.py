@@ -5,6 +5,7 @@ import streamlit as st
 import os
 import time
 import threading
+import logging
 from typing import Optional
 from downloader import YouTubeDownloader, VideoInfo, DownloadResult
 from utils import (
@@ -12,6 +13,10 @@ from utils import (
     formatear_tamaño, limpiar_titulo
 )
 from error_handler import ErrorHandler, error_handler, DownloadError
+
+# Suprimir warnings de Streamlit ScriptRunContext
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.scriptrunner.script_run_context").setLevel(logging.ERROR)
 
 # Configuración de la página
 st.set_page_config(
@@ -111,6 +116,83 @@ st.markdown("""
         border-radius: 8px;
         border: 1px solid #f5c6cb;
     }
+    
+    /* Estilos para barra de progreso personalizada */
+    .custom-progress-container {
+        background: #f0f2f6;
+        border-radius: 10px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        border: 1px solid #e0e6ed;
+    }
+    
+    .custom-progress-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+    
+    .custom-progress-title {
+        font-weight: 600;
+        color: #2c3e50;
+        font-size: 1.1rem;
+    }
+    
+    .custom-progress-percentage {
+        font-weight: 700;
+        color: #4ecdc4;
+        font-size: 1.2rem;
+    }
+    
+    .custom-progress-bar {
+        width: 100%;
+        height: 12px;
+        background-color: #e9ecef;
+        border-radius: 6px;
+        overflow: hidden;
+        margin-bottom: 0.5rem;
+        box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
+    }
+    
+    .custom-progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #4ecdc4, #44e08e);
+        border-radius: 6px;
+        transition: width 0.3s ease-in-out;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    
+    .custom-progress-info {
+        display: flex;
+        justify-content: space-between;
+        color: #6c757d;
+        font-size: 0.9rem;
+        margin-top: 0.5rem;
+    }
+    
+    .spinner-container {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 1rem 0;
+    }
+    
+    .custom-spinner {
+        border: 3px solid #f3f3f3;
+        border-top: 3px solid #4ecdc4;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin-right: 1rem;
+    }
+    
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -135,6 +217,64 @@ if 'progress' not in st.session_state:
     
 if 'download_status' not in st.session_state:
     st.session_state.download_status = None
+    
+if 'download_speed' not in st.session_state:
+    st.session_state.download_speed = 0
+    
+if 'download_eta' not in st.session_state:
+    st.session_state.download_eta = 0
+
+def mostrar_barra_progreso(progreso, titulo="Descargando", velocidad=0, eta=0):
+    """Muestra una barra de progreso personalizada"""
+    velocidad_str = ""
+    eta_str = ""
+    
+    if velocidad > 0:
+        if velocidad > 1024 * 1024:  # MB/s
+            velocidad_str = f"{velocidad / (1024 * 1024):.1f} MB/s"
+        elif velocidad > 1024:  # KB/s
+            velocidad_str = f"{velocidad / 1024:.1f} KB/s"
+        else:  # B/s
+            velocidad_str = f"{velocidad:.0f} B/s"
+    
+    if eta > 0:
+        if eta > 3600:  # horas
+            horas = int(eta // 3600)
+            minutos = int((eta % 3600) // 60)
+            eta_str = f"{horas}h {minutos}m"
+        elif eta > 60:  # minutos
+            minutos = int(eta // 60)
+            segundos = int(eta % 60)
+            eta_str = f"{minutos}m {segundos}s"
+        else:  # segundos
+            eta_str = f"{eta:.0f}s"
+    
+    progreso_clamped = max(0, min(100, progreso))
+    
+    st.markdown(f"""
+    <div class="custom-progress-container">
+        <div class="custom-progress-header">
+            <span class="custom-progress-title">{titulo}</span>
+            <span class="custom-progress-percentage">{progreso_clamped:.1f}%</span>
+        </div>
+        <div class="custom-progress-bar">
+            <div class="custom-progress-fill" style="width: {progreso_clamped}%"></div>
+        </div>
+        <div class="custom-progress-info">
+            <span>{velocidad_str if velocidad_str else 'Calculando velocidad...'}</span>
+            <span>{'ETA: ' + eta_str if eta_str else 'Calculando tiempo...'}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def mostrar_spinner_descarga(mensaje="Procesando..."):
+    """Muestra un spinner de carga personalizado"""
+    st.markdown(f"""
+    <div class="spinner-container">
+        <div class="custom-spinner"></div>
+        <span style="font-size: 1.1rem; color: #4ecdc4; font-weight: 600;">{mensaje}</span>
+    </div>
+    """, unsafe_allow_html=True)
     
 
 
@@ -191,7 +331,7 @@ def mostrar_formulario_entrada():
         help="Pega aquí la URL del video de YouTube que quieres descargar"
     )
     
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2 = st.columns([3, 1])
     
     with col1:
         if st.button("🔍 Obtener información del video", type="primary", use_container_width=True):
@@ -238,24 +378,15 @@ def mostrar_formulario_entrada():
                     st.session_state.current_url = None
     
     with col2:
-        if st.button("🗑️ Limpiar", use_container_width=True):
-            st.session_state.video_info = None
-            st.session_state.current_url = None
-            st.session_state.download_result = None
-            st.session_state.download_status = None
-            st.session_state.progress = 0
-            st.rerun()
-    
-    with col3:
-        # Selectbox pequeño para elegir tipo de descarga
+        # Selectbox para elegir tipo de descarga rápida
         tipo_descarga_rapida = st.selectbox(
-            "Tipo",
-            ["Video", "Audio"],
-            help="Selecciona el tipo de descarga rápida",
+            "Tipo de Descarga Rápida",
+            ["Video (Máxima Calidad)", "Audio (Máxima Calidad)"],
+            help="Selecciona el tipo de descarga rápida con máxima calidad",
             key="tipo_descarga_rapida"
         )
         
-        if st.button("📥 Descarga Rápida", use_container_width=True, help="Descargar directamente sin obtener información previa"):
+        if st.button("📥 Descarga Rápida", use_container_width=True, help="Descargar directamente con máxima calidad disponible"):
             if not url:
                 error_handler.display_warning("Por favor ingresa una URL")
                 return
@@ -284,6 +415,10 @@ def mostrar_formulario_entrada():
                 try:
                     status = d.get('status', '')
                     if status == 'downloading':
+                        # Actualizar velocidad y ETA
+                        st.session_state.download_speed = d.get('speed', 0) or 0
+                        st.session_state.download_eta = d.get('eta', 0) or 0
+                        
                         if 'total_bytes' in d and d['total_bytes']:
                             progress = (d['downloaded_bytes'] / d['total_bytes']) * 100
                             st.session_state.progress = min(progress, 100)
@@ -301,46 +436,72 @@ def mostrar_formulario_entrada():
                     elif status == 'finished':
                         st.session_state.progress = 100
                         st.session_state.download_status = "Finalizando..."
+                        st.session_state.download_speed = 0
+                        st.session_state.download_eta = 0
                         if 'filename' in d:
                             st.session_state.filename = d['filename']
                 except Exception as e:
                     # Evitar que errores en el callback interrumpan la descarga
                     pass
             
-            with st.spinner(f"Descargando {tipo_descarga_rapida.lower()}..."):
-                try:
-                    # Configurar el callback de progreso
-                    st.session_state.downloader.set_progress_callback(progress_callback)
+            # Determinar el tipo de descarga
+            es_video = "Video" in tipo_descarga_rapida
+            tipo_display = "video con máxima calidad" if es_video else "audio con máxima calidad"
+            
+            # Mostrar barra de progreso si está descargando
+            if st.session_state.downloading:
+                if st.session_state.progress > 0:
+                    mostrar_barra_progreso(
+                        st.session_state.progress, 
+                        f"Descargando {tipo_display}",
+                        st.session_state.download_speed,
+                        st.session_state.download_eta
+                    )
+                else:
+                    mostrar_spinner_descarga(f"Iniciando descarga de {tipo_display}...")
+            
+            try:
+                # Configurar el callback de progreso
+                st.session_state.downloader.set_progress_callback(progress_callback)
+                
+                if es_video:
+                    # Descarga de video con máxima calidad (4K si está disponible)
+                    resultado = st.session_state.downloader.descargar_video(url, calidad='4k')
+                else:
+                    # Descarga de audio con máxima calidad
+                    resultado = st.session_state.downloader.descargar_audio(url)
+                
+                st.session_state.download_result = resultado
+                st.session_state.downloading = False
+                
+                if resultado.exito:
+                    tipo_final = "Video" if es_video else "Audio"
+                    error_handler.display_success(
+                        f"{tipo_final} descargado exitosamente con máxima calidad",
+                        {
+                            'Archivo': os.path.basename(resultado.archivo_descargado),
+                            'Tamaño': formatear_tamaño(resultado.tamaño_final) if resultado.tamaño_final else 'N/A',
+                            'Tiempo': f"{resultado.tiempo_descarga:.1f}s" if resultado.tiempo_descarga else 'N/A',
+                            'Calidad': resultado.calidad_final if resultado.calidad_final else 'N/A'
+                        }
+                    )
+                    # Limpiar estado de progreso
+                    st.session_state.progress = 0
+                    st.session_state.download_speed = 0
+                    st.session_state.download_eta = 0
+                    st.rerun()
+                else:
+                    raise DownloadError(resultado.mensaje or "Error desconocido durante la descarga")
                     
-                    if tipo_descarga_rapida == "Video":
-                        # Descarga de video con calidad automática
-                        resultado = st.session_state.downloader.descargar_video(url)
-                    else:
-                        # Descarga de audio
-                        resultado = st.session_state.downloader.descargar_audio(url)
-                    
-                    st.session_state.download_result = resultado
-                    st.session_state.downloading = False
-                    
-                    if resultado.exito:
-                        error_handler.display_success(
-                            f"{tipo_descarga_rapida} descargado exitosamente",
-                            {
-                                'Archivo': os.path.basename(resultado.archivo_descargado),
-                                'Tamaño': formatear_tamaño(resultado.tamaño_final) if resultado.tamaño_final else 'N/A',
-                                'Tiempo': f"{resultado.tiempo_descarga:.1f}s" if resultado.tiempo_descarga else 'N/A',
-                                'Calidad': resultado.calidad_final if resultado.calidad_final else 'N/A'
-                            }
-                        )
-                        st.rerun()
-                    else:
-                        raise DownloadError(resultado.mensaje or "Error desconocido durante la descarga")
-                        
-                except Exception as e:
-                    st.session_state.downloading = False
-                    error_info = error_handler.handle_error(e, "descarga_rapida")
-                    error_handler.display_error(error_info)
-                    st.session_state.download_result = None
+            except Exception as e:
+                st.session_state.downloading = False
+                # Limpiar estado de progreso en caso de error
+                st.session_state.progress = 0
+                st.session_state.download_speed = 0
+                st.session_state.download_eta = 0
+                error_info = error_handler.handle_error(e, "descarga_rapida")
+                error_handler.display_error(error_info)
+                st.session_state.download_result = None
 
 def mostrar_info_video(video_info: VideoInfo):
     """Muestra la información del video"""

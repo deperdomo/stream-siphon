@@ -41,41 +41,51 @@ class Config:
         'prefer_ffmpeg': True,
         'keepvideo': False,  # No mantener archivos temporales
         'embed_subs': False,  # No embebido de subtítulos para evitar errores
-        'concurrent_fragment_downloads': 3,  # Descarga más rápida
-        'retries': 3,
-        'fragment_retries': 3,
+        'concurrent_fragment_downloads': 1,  # Sin concurrencia para evitar bloqueos
+        'retries': 3,  # Reintentos moderados
+        'fragment_retries': 3,  # Reintentos de fragmentos moderados
         'noplaylist': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        'socket_timeout': 30,
+        'no_check_certificates': True,  # Ignorar problemas de certificados SSL
+        'skip_unavailable_fragments': True,
     }
     
-    # Configuraciones específicas para audio
+    # Configuraciones específicas para audio (máxima calidad)
     AUDIO_OPTIONS = {
-        'format': 'bestaudio[ext=m4a]/bestaudio[ext=aac]/bestaudio[ext=mp3]/bestaudio/best[height<=480]/best',
+        'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/18/best',  # Mejor calidad de audio disponible
         'noplaylist': True,
+        'ignoreerrors': True,
+        'extract_flat': False,
+        'skip_unavailable_fragments': True,
+        'no_check_certificates': True,
     }
     
-    # Formatos de video con ffmpeg disponible (combinación de video y audio)
+    # Formatos de video con ffmpeg disponible (combinación de video y audio) - Máxima calidad
     VIDEO_FORMATS_WITH_FFMPEG = {
-        '4k': 'bestvideo[height<=2160]+bestaudio/best[height<=2160]',
-        '1440p': 'bestvideo[height<=1440]+bestaudio/best[height<=1440]',
-        '1080p': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
-        '720p': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
-        'auto': 'bestvideo+bestaudio/best'
+        '4k': 'bestvideo[height<=2160]+bestaudio/bestvideo[height<=1440]+bestaudio/18/best',
+        '1440p': 'bestvideo[height<=1440]+bestaudio/18/best',
+        '1080p': 'bestvideo[height<=1080]+bestaudio/18/best',
+        '720p': 'bestvideo[height<=720]+bestaudio/18/best',
+        'auto': 'bestvideo+bestaudio/18/best'
     }
     
-    # Formatos de video sin ffmpeg (formato único con audio incluido)
+    # Formatos de video sin ffmpeg (formato único con audio incluido) - Máxima calidad
     VIDEO_FORMATS_NO_FFMPEG = {
-        '4k': 'best[height<=2160]',
-        '1440p': 'best[height<=1440]',
-        '1080p': 'best[height<=1080]',
-        '720p': 'best[height<=720]',
+        '4k': 'best[height>=2160]/best[height>=1440]/best',
+        '1440p': 'best[height>=1440]/best',
+        '1080p': 'best[height>=1080]/best',
+        '720p': 'best[height>=720]/best',
         'auto': 'best'
     }
     
-    # Postprocesadores de audio
+    # Postprocesadores de audio (máxima calidad)
     AUDIO_POSTPROCESSORS = [{
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'mp3',
-        'preferredquality': '0',  # 0 = mantener calidad original
+        'preferredquality': '0',  # 0 = mantener calidad original (máxima calidad)
     }]
     
     # Plantillas de nombres de archivo
