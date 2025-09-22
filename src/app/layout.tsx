@@ -9,6 +9,13 @@ const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 export const metadata: Metadata = {
   title: 'StreamSiphon',
   description: 'Download YouTube videos and audio with ease.',
+  icons: {
+    icon: [
+      { url: '/logo.png?v=3', sizes: '32x32', type: 'image/png' },
+      { url: '/logo.png?v=3', sizes: '16x16', type: 'image/png' },
+    ],
+    shortcut: '/logo.png?v=3',
+  },
 };
 
 export default function RootLayout({

@@ -408,7 +408,7 @@ export default function YoutubeDownloader() {
                   </SelectContent>
                 </Select>
                 <p className="text-sm text-muted-foreground mt-2 flex items-center gap-2">
-                  <Info className="w-4 h-4" />
+                  <Info className="w-4 h-4 shrink-0" />
                   Las calidades HD se combinan automáticamente con el mejor audio disponible
                 </p>
               </TabsContent>
