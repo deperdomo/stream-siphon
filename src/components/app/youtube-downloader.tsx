@@ -140,27 +140,50 @@ export default function YoutubeDownloader() {
         format: selectedQuality 
       });
 
-      clearInterval(progressInterval);
-      setDownloadProgress(100);
+      if (result.success && result.fileName) {
+        // Use the API route to download the actual file
+        const downloadResponse = await fetch('/api/download', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            youtubeUrl: form.getValues("youtubeUrl"),
+            format: selectedQuality
+          }),
+        });
 
-      if (result.fileData) {
-         // Create a link and trigger the download
+        if (!downloadResponse.ok) {
+          throw new Error('Download failed');
+        }
+
+        // Create blob from response
+        const blob = await downloadResponse.blob();
+        
+        // Create download link
+        const url = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.href = result.fileData;
-        link.download = result.fileName ?? "download";
+        link.href = url;
+        link.download = result.fileName;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        
+        // Clean up blob URL
+        window.URL.revokeObjectURL(url);
 
+        clearInterval(progressInterval);
+        setDownloadProgress(100);
         setDownloadComplete(true);
         setIsDownloading(false);
+        
         toast({
           title: "Download Complete!",
-          description: `${result.fileName} has been downloaded.`,
+          description: `${result.fileName} has been downloaded to your Downloads folder.`,
           action: <CheckCircle className="text-green-500" />,
         });
       } else {
-        throw new Error("Download failed: No file data received.");
+        throw new Error(result.error || "Download failed: No file data received.");
       }
 
     } catch (error) {
@@ -318,6 +341,9 @@ export default function YoutubeDownloader() {
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-sm text-muted-foreground mt-2">
+                  ℹ️ Las calidades HD se combinan automáticamente con el mejor audio disponible
+                </p>
               </TabsContent>
               <TabsContent value="audio">
                 <Select onValueChange={setSelectedQuality} value={selectedQuality} disabled={audioFormats.length === 0}>

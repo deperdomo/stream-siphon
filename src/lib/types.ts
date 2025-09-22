@@ -17,7 +17,6 @@ export interface DownloadYoutubeVideoInput {
 export interface DownloadYoutubeVideoOutput {
   success: boolean;
   downloadUrl?: string;
-  fileData?: string;
   fileName?: string;
   error?: string;
 }
