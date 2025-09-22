@@ -32,40 +32,49 @@ export async function performYoutubeAnalysis(
     }
 
     console.log('Analyzing URL:', youtubeUrl);
+    console.log('Environment:', process.env.NODE_ENV);
+    console.log('Platform:', process.platform);
     
-    // Configure ytdl with Spanish language preference
-    const info = await ytdl.getInfo(youtubeUrl, {
-      lang: 'es',
-      requestOptions: {
-        headers: {
-          'Accept-Language': 'es,es-ES;q=0.9,en;q=0.8'
+    // Configure ytdl with Spanish language preference and timeout
+    const info = await Promise.race([
+      ytdl.getInfo(youtubeUrl, {
+        lang: 'es',
+        requestOptions: {
+          headers: {
+            'Accept-Language': 'es,es-ES;q=0.9,en;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+          }
         }
-      }
-    });
+      }),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Timeout: Video analysis took too long')), 25000)
+      )
+    ]) as any;
+    
     console.log('Video info retrieved successfully');
 
     // Mostrar TODAS las calidades de video disponibles (combinadas + solo-video)
     // Combinaremos automáticamente video de alta calidad con audio durante la descarga
     const combinedVideoFormats = info.formats
-      .filter(f => 
+      .filter((f: any) => 
         f.hasVideo && 
         f.hasAudio && 
         f.qualityLabel && 
         f.qualityLabel.includes('p') &&
         (f.container === 'mp4' || f.container === 'webm')
       )
-      .map(f => f.qualityLabel)
+      .map((f: any) => f.qualityLabel)
       .filter(Boolean);
 
     const videoOnlyFormats = info.formats
-      .filter(f => 
+      .filter((f: any) => 
         f.hasVideo && 
         !f.hasAudio && 
         f.qualityLabel && 
         f.qualityLabel.includes('p') &&
         (f.container === 'mp4' || f.container === 'webm')
       )
-      .map(f => f.qualityLabel)
+      .map((f: any) => f.qualityLabel)
       .filter(Boolean);
 
     // Incluir TODAS las calidades (combinadas + solo-video)
@@ -75,23 +84,23 @@ export async function performYoutubeAnalysis(
 
     // Get audio formats with better filtering - show ALL available bitrates
     const audioFormats = info.formats
-      .filter(f => 
+      .filter((f: any) => 
         f.hasAudio && 
         !f.hasVideo && 
         f.audioBitrate &&
         (f.container === 'mp4' || f.container === 'webm' || f.mimeType?.includes('audio'))
       )
-      .map(f => `${Math.floor(Number(f.audioBitrate))}kbps`)
+      .map((f: any) => `${Math.floor(Number(f.audioBitrate))}kbps`)
       .filter(Boolean);
 
     console.log('All available formats:', info.formats.length);
     console.log('Video formats found (all containers):', info.formats
-      .filter(f => f.hasVideo && f.hasAudio && f.qualityLabel)
-      .map(f => ({ quality: f.qualityLabel, container: f.container, codec: f.codecs }))
+      .filter((f: any) => f.hasVideo && f.hasAudio && f.qualityLabel)
+      .map((f: any) => ({ quality: f.qualityLabel, container: f.container, codec: f.codecs }))
     );
     console.log('All video formats (including video-only):', info.formats
-      .filter(f => f.hasVideo && f.qualityLabel)
-      .map(f => ({ 
+      .filter((f: any) => f.hasVideo && f.qualityLabel)
+      .map((f: any) => ({ 
         quality: f.qualityLabel, 
         container: f.container, 
         hasAudio: f.hasAudio,
@@ -100,8 +109,8 @@ export async function performYoutubeAnalysis(
       }))
     );
     console.log('Audio-only formats found:', info.formats
-      .filter(f => f.hasAudio && !f.hasVideo)
-      .map(f => ({ 
+      .filter((f: any) => f.hasAudio && !f.hasVideo)
+      .map((f: any) => ({ 
         bitrate: f.audioBitrate ? `${Math.floor(Number(f.audioBitrate))}kbps` : 'unknown',
         container: f.container,
         url: f.url?.substring(0, 50) + '...'
@@ -109,10 +118,10 @@ export async function performYoutubeAnalysis(
     );
 
     const uniqueVideoFormats = [...new Set(videoFormats)].sort(
-      (a, b) => parseInt(b!) - parseInt(a!)
+      (a: unknown, b: unknown) => parseInt(String(b)) - parseInt(String(a))
     );
     const uniqueAudioFormats = [...new Set(audioFormats)].sort(
-      (a, b) => parseInt(b) - parseInt(a)
+      (a: unknown, b: unknown) => parseInt(String(b)) - parseInt(String(a))
     );
     
     console.log('Combined video formats found:', combinedVideoFormats);
@@ -130,9 +139,36 @@ export async function performYoutubeAnalysis(
       formats: [...uniqueVideoFormats, ...uniqueAudioFormats],
     };
   } catch (error) {
-    console.error('Error analyzing YouTube URL:', error);
+    console.error('Detailed error analyzing YouTube URL:', {
+      error: error instanceof Error ? error.message : error,
+      stack: error instanceof Error ? error.stack : undefined,
+      url: input.youtubeUrl,
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV,
+      platform: process.platform
+    });
+    
+    // Provide more specific error messages
+    if (error instanceof Error) {
+      if (error.message.includes('Timeout')) {
+        throw new Error('El análisis del video tardó demasiado tiempo. Inténtalo de nuevo.');
+      }
+      if (error.message.includes('403') || error.message.includes('Forbidden')) {
+        throw new Error('Acceso denegado al video. Puede estar restringido geográficamente.');
+      }
+      if (error.message.includes('404') || error.message.includes('Not Found')) {
+        throw new Error('Video no encontrado. Verifica que la URL sea correcta.');
+      }
+      if (error.message.includes('429') || error.message.includes('Too Many Requests')) {
+        throw new Error('Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.');
+      }
+      if (error.message.includes('network') || error.message.includes('ENOTFOUND')) {
+        throw new Error('Error de conexión. Verifica tu conexión a internet.');
+      }
+    }
+    
     throw new Error(
-      "Failed to analyze YouTube URL. Please ensure it's a valid link."
+      "Error al analizar la URL de YouTube. Verifica que sea un enlace válido y accesible."
     );
   }
 }
