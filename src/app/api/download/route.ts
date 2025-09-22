@@ -6,10 +6,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createWriteStream, createReadStream, unlinkSync } from 'fs';
 import { randomUUID } from 'crypto';
+import { sendProgressUpdate, sendCompletion, sendError } from './progress/route';
 
 export async function POST(request: NextRequest) {
   try {
-    const { youtubeUrl, format } = await request.json();
+    const { youtubeUrl, format, sessionId } = await request.json();
 
     if (!youtubeUrl || !format) {
       return NextResponse.json(
@@ -28,6 +29,11 @@ export async function POST(request: NextRequest) {
 
     console.log('Starting download for:', youtubeUrl, format);
     
+    // Send initial progress
+    if (sessionId) {
+      sendProgressUpdate(sessionId, 5, 'Analizando video...');
+    }
+
     // Configure ytdl with Spanish language preference
     const info = await ytdl.getInfo(youtubeUrl, {
       lang: 'es',
@@ -37,6 +43,10 @@ export async function POST(request: NextRequest) {
         }
       }
     });
+
+    if (sessionId) {
+      sendProgressUpdate(sessionId, 10, 'Seleccionando mejor formato...');
+    }
 
     // Find the requested format
     let selectedFormat;
@@ -114,7 +124,7 @@ export async function POST(request: NextRequest) {
               id: (audioFormat as any).audioTrack.id
             } : 'N/A'
           });
-          return await combineVideoAudio(youtubeUrl, videoFormat, audioFormat);
+          return await combineVideoAudio(youtubeUrl, videoFormat, audioFormat, sessionId);
         }
       }
       
@@ -155,7 +165,23 @@ export async function POST(request: NextRequest) {
     };
     
     console.log('Streaming with options:', streamOptions);
+    
+    if (sessionId) {
+      sendProgressUpdate(sessionId, 15, isAudio ? 'Descargando audio...' : 'Descargando video...');
+    }
+    
     const videoStream = ytdl(youtubeUrl, streamOptions);
+
+    // Add progress tracking for simple downloads
+    let downloadProgress = 0;
+    videoStream.on('progress', (chunkLength, downloaded, total) => {
+      const progress = Math.floor((downloaded / total) * 100);
+      if (progress > downloadProgress && sessionId) {
+        downloadProgress = progress;
+        const message = isAudio ? `Descargando audio... ${progress}%` : `Descargando video... ${progress}%`;
+        sendProgressUpdate(sessionId, 15 + (progress * 0.8), message);
+      }
+    });
 
     // Set appropriate headers for file download
     const headers = new Headers();
@@ -170,11 +196,17 @@ export async function POST(request: NextRequest) {
         });
         
         videoStream.on('end', () => {
+          if (sessionId) {
+            sendCompletion(sessionId, 'Descarga completada exitosamente');
+          }
           controller.close();
         });
         
         videoStream.on('error', (error) => {
           console.error('Stream error:', error);
+          if (sessionId) {
+            sendError(sessionId, 'Error durante la descarga: ' + error.message);
+          }
           controller.error(error);
         });
       },
@@ -186,6 +218,17 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error('Download error:', error);
+    
+    // Get sessionId from the request if available
+    try {
+      const body = await request.clone().json();
+      if (body.sessionId) {
+        sendError(body.sessionId, 'Error durante la descarga: ' + (error instanceof Error ? error.message : 'Error desconocido'));
+      }
+    } catch (e) {
+      // Ignore JSON parsing errors in error handler
+    }
+    
     return NextResponse.json(
       { error: 'Failed to download video' },
       { status: 500 }
@@ -194,7 +237,7 @@ export async function POST(request: NextRequest) {
 }
 
 // Función para combinar video y audio usando FFmpeg con archivos temporales
-async function combineVideoAudio(youtubeUrl: string, videoFormat: any, audioFormat: any): Promise<NextResponse> {
+async function combineVideoAudio(youtubeUrl: string, videoFormat: any, audioFormat: any, sessionId?: string): Promise<NextResponse> {
   const tempId = randomUUID();
   const tempDir = tmpdir();
   const videoPath = join(tempDir, `video_${tempId}.mp4`);
@@ -204,23 +247,54 @@ async function combineVideoAudio(youtubeUrl: string, videoFormat: any, audioForm
   return new Promise((resolve, reject) => {
     console.log('Starting video and audio download to temp files...');
     
+    // Send progress update
+    if (sessionId) {
+      sendProgressUpdate(sessionId, 15, 'Descargando video...');
+    }
+    
     // Download video stream to temp file
     const videoStream = ytdl(youtubeUrl, { format: videoFormat });
     const videoFile = createWriteStream(videoPath);
+    
+    let videoProgress = 0;
+    videoStream.on('progress', (chunkLength, downloaded, total) => {
+      const progress = Math.floor((downloaded / total) * 100);
+      if (progress > videoProgress && sessionId) {
+        videoProgress = progress;
+        sendProgressUpdate(sessionId, 15 + (progress * 0.35), `Descargando video... ${progress}%`);
+      }
+    });
     
     videoStream.pipe(videoFile);
     
     videoStream.on('end', () => {
       console.log('Video download completed, starting audio download...');
       
+      if (sessionId) {
+        sendProgressUpdate(sessionId, 50, 'Descargando audio...');
+      }
+      
       // Download audio stream to temp file
       const audioStream = ytdl(youtubeUrl, { format: audioFormat });
       const audioFile = createWriteStream(audioPath);
+      
+      let audioProgress = 0;
+      audioStream.on('progress', (chunkLength, downloaded, total) => {
+        const progress = Math.floor((downloaded / total) * 100);
+        if (progress > audioProgress && sessionId) {
+          audioProgress = progress;
+          sendProgressUpdate(sessionId, 50 + (progress * 0.25), `Descargando audio... ${progress}%`);
+        }
+      });
       
       audioStream.pipe(audioFile);
       
       audioStream.on('end', () => {
         console.log('Audio download completed, starting FFmpeg combination...');
+        
+        if (sessionId) {
+          sendProgressUpdate(sessionId, 75, 'Mezclando audio y video... 0%');
+        }
         
         // Combine using FFmpeg
         ffmpeg()
@@ -236,12 +310,18 @@ async function combineVideoAudio(youtubeUrl: string, videoFormat: any, audioForm
             console.log('FFmpeg started:', commandLine);
           })
           .on('progress', (progress) => {
-            if (progress.percent) {
+            if (progress.percent && sessionId) {
+              const ffmpegProgress = Math.floor(progress.percent);
+              sendProgressUpdate(sessionId, 75 + (ffmpegProgress * 0.24), `Mezclando audio y video... ${ffmpegProgress}%`);
               console.log(`Processing: ${progress.percent.toFixed(1)}% done`);
             }
           })
           .on('end', () => {
             console.log('FFmpeg combination completed successfully');
+            
+            if (sessionId) {
+              sendProgressUpdate(sessionId, 99, 'Finalizando descarga...');
+            }
             
             // Stream the result back to client
             const outputStream = createReadStream(outputPath);
@@ -267,10 +347,18 @@ async function combineVideoAudio(youtubeUrl: string, videoFormat: any, audioForm
               }, 1000);
             });
             
+            if (sessionId) {
+              sendCompletion(sessionId, 'Descarga completada exitosamente');
+            }
+            
             resolve(new NextResponse(outputStream as any, { headers }));
           })
           .on('error', (err) => {
             console.error('FFmpeg error:', err.message);
+            
+            if (sessionId) {
+              sendError(sessionId, 'Error al combinar video y audio: ' + err.message);
+            }
             
             // Clean up temp files on error
             try {
@@ -293,6 +381,9 @@ async function combineVideoAudio(youtubeUrl: string, videoFormat: any, audioForm
       
       audioStream.on('error', (err) => {
         console.error('Audio download error:', err);
+        if (sessionId) {
+          sendError(sessionId, 'Error al descargar audio: ' + err.message);
+        }
         reject(new NextResponse(JSON.stringify({ 
           error: 'Failed to download audio: ' + err.message 
         }), { 
@@ -304,6 +395,9 @@ async function combineVideoAudio(youtubeUrl: string, videoFormat: any, audioForm
     
     videoStream.on('error', (err) => {
       console.error('Video download error:', err);
+      if (sessionId) {
+        sendError(sessionId, 'Error al descargar video: ' + err.message);
+      }
       reject(new NextResponse(JSON.stringify({ 
         error: 'Failed to download video: ' + err.message 
       }), { 

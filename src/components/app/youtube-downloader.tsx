@@ -14,6 +14,9 @@ import {
   CheckCircle,
   XCircle,
   Youtube,
+  Info,
+  Clipboard,
+  Trash2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -63,6 +66,7 @@ export default function YoutubeDownloader() {
   const [downloadComplete, setDownloadComplete] = React.useState(false);
   const [selectedFormatType, setSelectedFormatType] = React.useState<"video" | "audio">("video");
   const [selectedQuality, setSelectedQuality] = React.useState<string>("");
+  const [progressText, setProgressText] = React.useState<string>("");
 
   const { toast } = useToast();
 
@@ -122,73 +126,80 @@ export default function YoutubeDownloader() {
     setIsDownloading(true);
     setDownloadProgress(0);
     setDownloadComplete(false);
+    setProgressText("Iniciando descarga...");
 
     try {
-      // Simulate progress for the fetch
-      let progressInterval = setInterval(() => {
-        setDownloadProgress((prev) => {
-          if (prev >= 95) { // Stop before 100
-            clearInterval(progressInterval);
-            return prev;
-          }
-          return prev + Math.random() * 5 + 1;
-        });
-      }, 200);
+      // Create a unique session ID for this download
+      const sessionId = Math.random().toString(36).substring(7);
+      
+      // Set up Server-Sent Events to receive progress updates
+      const eventSource = new EventSource(`/api/download/progress?sessionId=${sessionId}`);
+      
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'progress') {
+          setDownloadProgress(data.progress);
+          setProgressText(data.message);
+        } else if (data.type === 'complete') {
+          eventSource.close();
+          setDownloadProgress(100);
+          setDownloadComplete(true);
+          setIsDownloading(false);
+          setProgressText("Descarga completada");
+        } else if (data.type === 'error') {
+          eventSource.close();
+          throw new Error(data.message);
+        }
+      };
 
-      const result = await downloadYoutubeVideo({ 
-        youtubeUrl: form.getValues("youtubeUrl"), 
-        format: selectedQuality 
+      eventSource.onerror = () => {
+        eventSource.close();
+        throw new Error('Connection lost during download');
+      };
+
+      // Start the download with the session ID
+      const downloadResponse = await fetch('/api/download', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          youtubeUrl: form.getValues("youtubeUrl"),
+          format: selectedQuality,
+          sessionId: sessionId
+        }),
       });
 
-      if (result.success && result.fileName) {
-        // Use the API route to download the actual file
-        const downloadResponse = await fetch('/api/download', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            youtubeUrl: form.getValues("youtubeUrl"),
-            format: selectedQuality
-          }),
-        });
-
-        if (!downloadResponse.ok) {
-          throw new Error('Download failed');
-        }
-
-        // Create blob from response
-        const blob = await downloadResponse.blob();
-        
-        // Create download link
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = result.fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        // Clean up blob URL
-        window.URL.revokeObjectURL(url);
-
-        clearInterval(progressInterval);
-        setDownloadProgress(100);
-        setDownloadComplete(true);
-        setIsDownloading(false);
-        
-        toast({
-          title: "Download Complete!",
-          description: `${result.fileName} has been downloaded to your Downloads folder.`,
-          action: <CheckCircle className="text-green-500" />,
-        });
-      } else {
-        throw new Error(result.error || "Download failed: No file data received.");
+      if (!downloadResponse.ok) {
+        eventSource.close();
+        throw new Error('Download failed');
       }
+
+      // Create blob from response
+      const blob = await downloadResponse.blob();
+      
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${analysisResult.title.replace(/[^a-zA-Z0-9\s]/g, '').substring(0, 50)}.${selectedQuality.includes('kbps') ? 'webm' : 'mp4'}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      // Clean up blob URL
+      window.URL.revokeObjectURL(url);
+      
+      toast({
+        title: "¡Descarga Completada!",
+        description: `El archivo ha sido descargado exitosamente.`,
+        action: <CheckCircle className="text-green-500" />,
+      });
 
     } catch (error) {
       setIsDownloading(false);
       setDownloadProgress(0);
+      setProgressText("");
       toast({
         variant: "destructive",
         title: "Download Failed",
@@ -218,6 +229,7 @@ export default function YoutubeDownloader() {
     setIsDownloading(false);
     setDownloadComplete(false);
     setDownloadProgress(0);
+    setProgressText("");
   }
   
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
@@ -229,6 +241,34 @@ export default function YoutubeDownloader() {
           new Event('submit', {cancelable: true, bubbles: true})
         );
       }, 0);
+    }
+  };
+
+  const handleClearInput = () => {
+    form.setValue('youtubeUrl', '', { shouldValidate: true });
+    resetState();
+  };
+
+  const handlePasteFromClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && formSchema.shape.youtubeUrl.safeParse(text).success) {
+        form.setValue('youtubeUrl', text, { shouldValidate: true });
+        setTimeout(() => {
+          formRef.current?.dispatchEvent(
+            new Event('submit', {cancelable: true, bubbles: true})
+          );
+        }, 0);
+      } else if (text) {
+        form.setValue('youtubeUrl', text, { shouldValidate: true });
+      }
+    } catch (err) {
+      console.error('Failed to read clipboard contents: ', err);
+      toast({
+        variant: "destructive",
+        title: "Error al acceder al portapapeles",
+        description: "No se pudo acceder al contenido del portapapeles.",
+      });
     }
   };
 
@@ -267,13 +307,39 @@ export default function YoutubeDownloader() {
                 <FormItem>
                   <div className="flex gap-2">
                     <FormControl>
-                      <Input
-                        placeholder="Paste YouTube video URL here..."
-                        {...field}
-                        onPaste={handlePaste}
-                        className="h-12 text-base"
-                        disabled={isAnalyzing}
-                      />
+                      <div className="relative flex-1">
+                        <Input
+                          placeholder="Paste YouTube video URL here..."
+                          {...field}
+                          onPaste={handlePaste}
+                          className="h-12 text-base pr-20"
+                          disabled={isAnalyzing}
+                        />
+                        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 hover:bg-muted"
+                            onClick={handlePasteFromClipboard}
+                            disabled={isAnalyzing}
+                            title="Pegar desde portapapeles"
+                          >
+                            <Clipboard className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 hover:bg-muted"
+                            onClick={handleClearInput}
+                            disabled={isAnalyzing || !field.value}
+                            title="Limpiar input"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
                     </FormControl>
                     <Button type="submit" size="lg" className="h-12" disabled={isAnalyzing}>
                       {isAnalyzing ? (
@@ -341,8 +407,9 @@ export default function YoutubeDownloader() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-sm text-muted-foreground mt-2">
-                  ℹ️ Las calidades HD se combinan automáticamente con el mejor audio disponible
+                <p className="text-sm text-muted-foreground mt-2 flex items-center gap-2">
+                  <Info className="w-4 h-4" />
+                  Las calidades HD se combinan automáticamente con el mejor audio disponible
                 </p>
               </TabsContent>
               <TabsContent value="audio">
@@ -365,7 +432,7 @@ export default function YoutubeDownloader() {
               <div className="space-y-2">
                   <Progress value={downloadProgress} className="w-full h-3" />
                   <p className="text-sm text-center text-muted-foreground">
-                    {isDownloading ? `Downloading... ${Math.round(downloadProgress)}%` : `Download complete!`}
+                    {progressText || (isDownloading ? "Preparando descarga..." : "Descarga completada")}
                   </p>
               </div>
             )}
