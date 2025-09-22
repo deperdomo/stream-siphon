@@ -7,11 +7,16 @@ import { join } from 'path';
 import { createWriteStream, createReadStream, unlinkSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { sendProgressUpdate, sendCompletion, sendError } from './progress/route';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
 export async function POST(request: NextRequest) {
   try {
     const { youtubeUrl, format, sessionId } = await request.json();
-
+    const ffmpegAvailable = await checkFFmpegAvailability();
+    if (!ffmpegAvailable) {
+      console.log('⚠️ FFmpeg not available, will skip video+audio combination');
+    }
     if (!youtubeUrl || !format) {
       return NextResponse.json(
         { error: 'YouTube URL and format are required' },
@@ -234,6 +239,18 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+  const execAsync = promisify(exec);
+  // Función para verificar si FFmpeg está disponible
+async function checkFFmpegAvailability(): Promise<boolean> {
+  try {
+    await execAsync('ffmpeg -version');
+    console.log('✅ FFmpeg is available');
+    return true;
+  } catch (error) {
+    console.log('❌ FFmpeg is not available:', error);
+    return false;
+  }
+}
 }
 
 // Función para combinar video y audio usando FFmpeg con archivos temporales
