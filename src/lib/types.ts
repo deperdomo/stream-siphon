@@ -12,6 +12,7 @@ export interface AnalyzeYoutubeUrlOutput {
 export interface DownloadYoutubeVideoInput {
   youtubeUrl: string;
   format: string;
+  downloadType?: 'single' | 'dual'; // single = video OR audio, dual = video AND audio
 }
 
 export interface DownloadYoutubeVideoOutput {

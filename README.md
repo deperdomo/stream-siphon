@@ -12,7 +12,7 @@
 - **⚡ Procesamiento en Tiempo Real**: Progress tracking con Server-Sent Events
 - **🎨 Interfaz Moderna**: UI/UX elegante con modo oscuro/claro
 - **📱 Responsive Design**: Optimizado para dispositivos móviles y desktop
-- **🔄 Combinación Inteligente**: Fusión automática de video HD con el mejor audio disponible usando FFmpeg
+- **🔄 Combinación Inteligente**: Fusión automática de video HD con el mejor audio disponible usando yt-dlp sin recomprimir
 - **📋 Funciones de Clipboard**: Pegado automático desde portapapeles
 - **🚀 Rendimiento Optimizado**: Construido con Next.js 15 y Turbopack
 
@@ -29,7 +29,7 @@
 
 ### Backend
 - **Runtime**: Node.js con Next.js API Routes
-- **Descarga**: @distube/ytdl-core para extracción de YouTube
+- **Descarga**: yt-dlp-wrap + yt-dlp para extracción de YouTube
 - **Procesamiento de Video**: FFmpeg (fluent-ffmpeg)
 - **Streams**: Node.js Streams para procesamiento eficiente
 - **Progress Tracking**: Server-Sent Events (SSE)
@@ -116,7 +116,7 @@ src/
 ### Descarga de Videos
 - **Análisis de URL**: Validación y extracción de metadatos
 - **Detección de Formatos**: Identificación automática de calidades disponibles
-- **Combinación de Streams**: Video HD + Audio de alta calidad usando FFmpeg
+- **Combinación de Streams**: Video HD + audio de alta calidad orquestados por yt-dlp (se reutiliza FFmpeg solo cuando es necesario para audio)
 - **Optimización de Audio**: Priorización de pistas en español
 
 ### Progress Tracking

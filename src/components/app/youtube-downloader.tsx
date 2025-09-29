@@ -17,6 +17,7 @@ import {
   Info,
   Clipboard,
   Trash2,
+  Package2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -64,7 +65,7 @@ export default function YoutubeDownloader() {
   const [downloadProgress, setDownloadProgress] = React.useState(0);
   const [isDownloading, setIsDownloading] = React.useState(false);
   const [downloadComplete, setDownloadComplete] = React.useState(false);
-  const [selectedFormatType, setSelectedFormatType] = React.useState<"video" | "audio">("video");
+  const [selectedFormatType, setSelectedFormatType] = React.useState<"video" | "audio" | "dual">("video");
   const [selectedQuality, setSelectedQuality] = React.useState<string>("");
   const [progressText, setProgressText] = React.useState<string>("");
 
@@ -158,7 +159,7 @@ export default function YoutubeDownloader() {
       };
 
       // Start the download with the session ID
-      const downloadResponse = await fetch('/api/download', {
+      const downloadResponse = await fetch(`/api/download?sessionId=${sessionId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -166,7 +167,7 @@ export default function YoutubeDownloader() {
         body: JSON.stringify({
           youtubeUrl: form.getValues("youtubeUrl"),
           format: selectedQuality,
-          sessionId: sessionId
+          downloadType: selectedFormatType === 'dual' ? 'dual' : 'single'
         }),
       });
 
@@ -175,20 +176,87 @@ export default function YoutubeDownloader() {
         throw new Error('Download failed');
       }
 
-      // Create blob from response
-      const blob = await downloadResponse.blob();
-      
-      // Create download link
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${analysisResult.title.replace(/[^a-zA-Z0-9\s]/g, '').substring(0, 50)}.${selectedQuality.includes('kbps') ? 'webm' : 'mp4'}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      
-      // Clean up blob URL
-      window.URL.revokeObjectURL(url);
+      // Handle download based on response type
+      if (selectedFormatType === 'dual') {
+        // For dual downloads, get the metadata and download both files sequentially
+        const dualData = await downloadResponse.json();
+        eventSource.close();
+        
+        setProgressText("Descargando video...");
+        setDownloadProgress(25);
+        
+        // Download video first
+        const videoSessionId = `${Date.now()}-video`;
+        const videoResponse = await fetch(`/api/download?sessionId=${videoSessionId}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            youtubeUrl: form.getValues("youtubeUrl"),
+            format: dualData.video.format,
+            downloadType: 'single',
+          }),
+        });
+        
+        if (videoResponse.ok) {
+          const videoBlob = await videoResponse.blob();
+          const videoUrl = window.URL.createObjectURL(videoBlob);
+          const videoLink = document.createElement('a');
+          videoLink.href = videoUrl;
+          videoLink.download = dualData.video.filename;
+          document.body.appendChild(videoLink);
+          videoLink.click();
+          document.body.removeChild(videoLink);
+          window.URL.revokeObjectURL(videoUrl);
+          
+          setProgressText("Descargando audio...");
+          setDownloadProgress(75);
+          
+          // Download audio second
+          const audioSessionId = `${Date.now()}-audio`;
+          const audioResponse = await fetch(`/api/download?sessionId=${audioSessionId}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              youtubeUrl: form.getValues("youtubeUrl"),
+              format: dualData.audio.format,
+              downloadType: 'single',
+            }),
+          });
+          
+          if (audioResponse.ok) {
+            const audioBlob = await audioResponse.blob();
+            const audioUrl = window.URL.createObjectURL(audioBlob);
+            const audioLink = document.createElement('a');
+            audioLink.href = audioUrl;
+            audioLink.download = dualData.audio.filename;
+            document.body.appendChild(audioLink);
+            audioLink.click();
+            document.body.removeChild(audioLink);
+            window.URL.revokeObjectURL(audioUrl);
+          }
+        }
+        
+        setDownloadProgress(100);
+        setDownloadComplete(true);
+        setIsDownloading(false);
+        setProgressText("Ambas descargas completadas");
+        
+      } else {
+        // Single file download
+        const blob = await downloadResponse.blob();
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${analysisResult.title.replace(/[^a-zA-Z0-9\s]/g, '').substring(0, 50)}.${selectedQuality.includes('kbps') ? 'webm' : 'mp4'}`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+      }
       
       toast({
         title: "¡Descarga Completada!",
@@ -274,9 +342,14 @@ export default function YoutubeDownloader() {
 
   React.useEffect(() => {
     if (analysisResult) {
-      const formats = selectedFormatType === 'video' ? videoFormats : audioFormats;
-      if (formats.length > 0 && !formats.includes(selectedQuality)) {
-        setSelectedQuality(formats[0]);
+      if (selectedFormatType === 'dual') {
+        // Para dual, establecer un valor especial que indique ambos formatos
+        setSelectedQuality('dual-best');
+      } else {
+        const formats = selectedFormatType === 'video' ? videoFormats : audioFormats;
+        if (formats.length > 0 && !formats.includes(selectedQuality)) {
+          setSelectedQuality(formats[0]);
+        }
       }
     }
   }, [selectedFormatType, analysisResult, videoFormats, audioFormats, selectedQuality]);
@@ -389,10 +462,11 @@ export default function YoutubeDownloader() {
               </div>
             </Card>
 
-            <Tabs value={selectedFormatType} onValueChange={(v) => setSelectedFormatType(v as "video" | "audio")} className="w-full">
-              <TabsList className="grid w-full grid-cols-2 h-12">
-                <TabsTrigger value="video" className="h-full text-base gap-2" disabled={videoFormats.length === 0}><Film />Video</TabsTrigger>
-                <TabsTrigger value="audio" className="h-full text-base gap-2" disabled={audioFormats.length === 0}><Music />Audio</TabsTrigger>
+            <Tabs value={selectedFormatType} onValueChange={(v) => setSelectedFormatType(v as "video" | "audio" | "dual")} className="w-full">
+              <TabsList className="grid w-full grid-cols-3 h-12">
+                <TabsTrigger value="video" className="h-full text-sm gap-1" disabled={videoFormats.length === 0}><Film size={16} />Video</TabsTrigger>
+                <TabsTrigger value="audio" className="h-full text-sm gap-1" disabled={audioFormats.length === 0}><Music size={16} />Audio</TabsTrigger>
+                <TabsTrigger value="dual" className="h-full text-sm gap-1" disabled={videoFormats.length === 0 || audioFormats.length === 0}><Package2 size={16} />Ambos</TabsTrigger>
               </TabsList>
               <TabsContent value="video">
                 <Select onValueChange={setSelectedQuality} value={selectedQuality} disabled={videoFormats.length === 0}>
@@ -426,6 +500,27 @@ export default function YoutubeDownloader() {
                   </SelectContent>
                 </Select>
               </TabsContent>
+              <TabsContent value="dual">
+                <div className="space-y-4">
+                  <div className="p-4 border rounded-lg bg-muted/50">
+                    <h4 className="font-semibold text-sm mb-2 text-center">Descarga Completa</h4>
+                    <div className="space-y-2 text-sm text-muted-foreground">
+                      <div className="flex items-center justify-between">
+                        <span>Video (mejor calidad):</span>
+                        <span className="font-medium text-foreground">{videoFormats[0] || 'No disponible'}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>Audio (mejor calidad):</span>
+                        <span className="font-medium text-foreground">{audioFormats[0] || 'No disponible'}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground flex items-center gap-2">
+                    <Info className="w-4 h-4 shrink-0" />
+                    Se descargarán 2 archivos: un video con audio y un archivo de audio puro, ambos en las mejores calidades disponibles
+                  </p>
+                </div>
+              </TabsContent>
             </Tabs>
             
             {(isDownloading || downloadComplete) && (
@@ -451,7 +546,7 @@ export default function YoutubeDownloader() {
                  ) : (
                    <>
                      <Download className="mr-2 h-5 w-5" />
-                     Download {selectedQuality}
+                     {selectedFormatType === 'dual' ? 'Descargar Video + Audio' : `Download ${selectedQuality}`}
                    </>
                  )}
                </Button>

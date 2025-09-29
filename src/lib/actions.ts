@@ -1,6 +1,7 @@
 'use server';
 
-import ytdl from '@distube/ytdl-core';
+import YTDlpWrap from 'yt-dlp-wrap';
+import { join } from 'path';
 import type {
   AnalyzeYoutubeUrlInput,
   AnalyzeYoutubeUrlOutput,
@@ -27,7 +28,8 @@ export async function performYoutubeAnalysis(
     const { youtubeUrl } = input;
     
     // Validate YouTube URL
-    if (!ytdl.validateURL(youtubeUrl)) {
+    const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)/;
+    if (!youtubeRegex.test(youtubeUrl)) {
       throw new Error('Invalid YouTube URL');
     }
 
@@ -35,46 +37,56 @@ export async function performYoutubeAnalysis(
     console.log('Environment:', process.env.NODE_ENV);
     console.log('Platform:', process.platform);
     
-    // Configure ytdl with Spanish language preference and timeout
+    // Initialize yt-dlp
+    const ytDlpPath = join(process.cwd(), 'yt-dlp.exe');
+    const ytDlp = new YTDlpWrap(ytDlpPath);
+    
+    // Get video info with timeout
     const info = await Promise.race([
-      ytdl.getInfo(youtubeUrl, {
-        lang: 'es',
-        requestOptions: {
-          headers: {
-            'Accept-Language': 'es,es-ES;q=0.9,en;q=0.8',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-          }
-        }
-      }),
+      ytDlp.getVideoInfo(youtubeUrl),
       new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Timeout: Video analysis took too long')), 25000)
       )
     ]) as any;
     
     console.log('Video info retrieved successfully');
+    console.log('Video title:', info?.title);
+    console.log('Info keys:', Object.keys(info || {}));
+    console.log('First few characters of info:', JSON.stringify(info).substring(0, 500));
+    console.log('All available formats:', info?.formats?.length);
+    
+    // Verify info structure and provide fallbacks
+    if (!info) {
+      throw new Error('No video information received from yt-dlp');
+    }
+    
+    // yt-dlp returns different structure, let's handle both formats and requested_formats
+    const formats = info.formats || info.requested_formats || [];
+    
+    console.log('Video formats found (all containers):', formats.filter((f: any) => f.vcodec && f.vcodec !== 'none'));
 
     // Mostrar TODAS las calidades de video disponibles (combinadas + solo-video)
     // Combinaremos automáticamente video de alta calidad con audio durante la descarga
-    const combinedVideoFormats = info.formats
+    const combinedVideoFormats = formats
       .filter((f: any) => 
-        f.hasVideo && 
-        f.hasAudio && 
-        f.qualityLabel && 
-        f.qualityLabel.includes('p') &&
-        (f.container === 'mp4' || f.container === 'webm')
+        f.vcodec && f.vcodec !== 'none' && 
+        f.acodec && f.acodec !== 'none' && 
+        (f.height || f.resolution) &&
+        (f.ext === 'mp4' || f.ext === 'webm')
       )
-      .map((f: any) => f.qualityLabel)
+      .map((f: any) => f.height ? `${f.height}p` : f.resolution)
       .filter(Boolean);
 
-    const videoOnlyFormats = info.formats
+    console.log('All video formats (including video-only):', formats.filter((f: any) => f.vcodec && f.vcodec !== 'none'));
+
+    const videoOnlyFormats = formats
       .filter((f: any) => 
-        f.hasVideo && 
-        !f.hasAudio && 
-        f.qualityLabel && 
-        f.qualityLabel.includes('p') &&
-        (f.container === 'mp4' || f.container === 'webm')
+        f.vcodec && f.vcodec !== 'none' && 
+        (!f.acodec || f.acodec === 'none') && 
+        (f.height || f.resolution) &&
+        (f.ext === 'mp4' || f.ext === 'webm')
       )
-      .map((f: any) => f.qualityLabel)
+      .map((f: any) => f.height ? `${f.height}p` : f.resolution)
       .filter(Boolean);
 
     // Incluir TODAS las calidades (combinadas + solo-video)
@@ -82,40 +94,20 @@ export async function performYoutubeAnalysis(
     const allVideoFormats = [...combinedVideoFormats, ...videoOnlyFormats];
     const videoFormats = [...new Set(allVideoFormats)];
 
-    // Get audio formats with better filtering - show ALL available bitrates
-    const audioFormats = info.formats
-      .filter((f: any) => 
-        f.hasAudio && 
-        !f.hasVideo && 
-        f.audioBitrate &&
-        (f.container === 'mp4' || f.container === 'webm' || f.mimeType?.includes('audio'))
-      )
-      .map((f: any) => `${Math.floor(Number(f.audioBitrate))}kbps`)
-      .filter(Boolean);
+    console.log('Audio-only formats found:', formats.filter((f: any) => f.acodec && f.acodec !== 'none' && (!f.vcodec || f.vcodec === 'none')));
+    console.log('Combined video formats found:', combinedVideoFormats);
+    console.log('Video-only formats found:', videoOnlyFormats);
 
-    console.log('All available formats:', info.formats.length);
-    console.log('Video formats found (all containers):', info.formats
-      .filter((f: any) => f.hasVideo && f.hasAudio && f.qualityLabel)
-      .map((f: any) => ({ quality: f.qualityLabel, container: f.container, codec: f.codecs }))
-    );
-    console.log('All video formats (including video-only):', info.formats
-      .filter((f: any) => f.hasVideo && f.qualityLabel)
-      .map((f: any) => ({ 
-        quality: f.qualityLabel, 
-        container: f.container, 
-        hasAudio: f.hasAudio,
-        hasVideo: f.hasVideo,
-        codec: f.codecs 
-      }))
-    );
-    console.log('Audio-only formats found:', info.formats
-      .filter((f: any) => f.hasAudio && !f.hasVideo)
-      .map((f: any) => ({ 
-        bitrate: f.audioBitrate ? `${Math.floor(Number(f.audioBitrate))}kbps` : 'unknown',
-        container: f.container,
-        url: f.url?.substring(0, 50) + '...'
-      }))
-    );
+    // Get audio formats with better filtering - show ALL available bitrates
+    const audioFormats = formats
+      .filter((f: any) => 
+        f.acodec && f.acodec !== 'none' && 
+        (!f.vcodec || f.vcodec === 'none') && 
+        f.abr &&
+        (f.ext === 'mp4' || f.ext === 'webm' || f.ext === 'm4a' || f.ext === 'mp3')
+      )
+      .map((f: any) => `${Math.floor(Number(f.abr))}kbps`)
+      .filter(Boolean);
 
     const uniqueVideoFormats = [...new Set(videoFormats)].sort(
       (a: unknown, b: unknown) => parseInt(String(b)) - parseInt(String(a))
@@ -126,16 +118,32 @@ export async function performYoutubeAnalysis(
     
     console.log('Combined video formats found:', combinedVideoFormats);
     console.log('Video-only formats found:', videoOnlyFormats);
-    console.log('Final video formats (ALL QUALITIES):', uniqueVideoFormats);
-    console.log('Audio formats found:', uniqueAudioFormats);
+    console.log('Final video formats (ALL QUALITIES - will output MP4 with video+audio):', uniqueVideoFormats);
+    console.log('Audio formats found (will output MP3):', uniqueAudioFormats);
     
+    // Si no encontramos formatos, agregar algunos predeterminados
+    if (uniqueVideoFormats.length === 0) {
+      uniqueVideoFormats.push('720p', '480p', '360p');
+      console.log('No formats found, using defaults:', uniqueVideoFormats);
+    }
+    
+    if (uniqueAudioFormats.length === 0) {
+      uniqueAudioFormats.push('128kbps', '96kbps', '64kbps');
+      console.log('No audio formats found, using defaults:', uniqueAudioFormats);
+    }
+    
+    // yt-dlp uses different property names
+    const title = info.title || info.fulltitle || 'Video sin título';
+    const duration = info.duration ? secondsToHms(Number(info.duration)) : 'Duración desconocida';
+    const thumbnailUrl = info.thumbnail || 
+                        (info.thumbnails && info.thumbnails.length > 0 ? 
+                         info.thumbnails[info.thumbnails.length - 1].url : 
+                         '');
+
     return {
-      title: info.videoDetails.title,
-      duration: secondsToHms(Number(info.videoDetails.lengthSeconds)),
-      thumbnailUrl:
-        info.videoDetails.thumbnails[
-          info.videoDetails.thumbnails.length - 1
-        ].url,
+      title,
+      duration,
+      thumbnailUrl,
       formats: [...uniqueVideoFormats, ...uniqueAudioFormats],
     };
   } catch (error) {
@@ -224,60 +232,27 @@ export async function downloadYoutubeVideo(
     const { youtubeUrl, format } = input;
     
     // Validate YouTube URL
-    if (!ytdl.validateURL(youtubeUrl)) {
+    const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)/;
+    if (!youtubeRegex.test(youtubeUrl)) {
       throw new Error('Invalid YouTube URL');
     }
 
     console.log('Preparing download info:', youtubeUrl, format);
     
-    // Configure ytdl with Spanish language preference
-    const info = await ytdl.getInfo(youtubeUrl, {
-      lang: 'es',
-      requestOptions: {
-        headers: {
-          'Accept-Language': 'es,es-ES;q=0.9,en;q=0.8'
-        }
-      }
-    });
+    // Initialize yt-dlp
+    const ytDlpPath = join(process.cwd(), 'yt-dlp.exe');
+    const ytDlp = new YTDlpWrap(ytDlpPath);
     
-    // Find the requested format to validate it exists
-    let selectedFormat;
+    // Get video info
+    const info = await ytDlp.getVideoInfo(youtubeUrl);
     
-    if (format.includes('kbps')) {
-      // Audio format - prioritize Spanish or default language
-      const audioFormats = info.formats.filter(f => 
-        f.hasAudio && 
-        !f.hasVideo && 
-        f.audioBitrate && 
-        (f.container === 'mp4' || f.container === 'webm' || f.mimeType?.includes('audio')) &&
-        `${Math.floor(Number(f.audioBitrate))}kbps` === format
-      );
-      
-      // Try to find Spanish audio first, then fall back to any available
-      selectedFormat = audioFormats.find(f => isSpanishAudio(f)) || audioFormats[0];
-      
-    } else {
-      // Video format - permitir tanto combinados como solo-video (se combinará automáticamente)
-      selectedFormat = info.formats.find(f => 
-        f.hasVideo && 
-        f.hasAudio && 
-        f.qualityLabel === format &&
-        (f.container === 'mp4' || f.container === 'webm')
-      );
-      
-      // Si no hay formato combinado, buscar formato solo-video
-      if (!selectedFormat) {
-        selectedFormat = info.formats.find(f => 
-          f.hasVideo && 
-          !f.hasAudio && 
-          f.qualityLabel === format &&
-          (f.container === 'mp4' || f.container === 'webm')
-        );
-      }
-    }
-
-    if (!selectedFormat) {
-      throw new Error(`El formato solicitado (${format}) no está disponible. Por favor selecciona una calidad diferente.`);
+    // yt-dlp maneja la selección de formatos automáticamente
+    // Solo validamos que el formato sea reconocible
+    const isAudioFormat = format.includes('kbps');
+    const isVideoFormat = format.includes('p');
+    
+    if (!isAudioFormat && !isVideoFormat) {
+      throw new Error(`Formato no reconocido: ${format}`);
     }
 
     // Generate filename

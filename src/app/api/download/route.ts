@@ -1,478 +1,588 @@
 import { NextRequest, NextResponse } from 'next/server';
-import ytdl from '@distube/ytdl-core';
+import YTDlpWrap from 'yt-dlp-wrap';
 import ffmpeg from 'fluent-ffmpeg';
-import { PassThrough } from 'stream';
 import { tmpdir } from 'os';
-import { join } from 'path';
-import { createWriteStream, createReadStream, unlinkSync } from 'fs';
+import { join, extname } from 'path';
+import { unlinkSync, existsSync, readFileSync, readdirSync } from 'fs';
 import { randomUUID } from 'crypto';
-import { sendProgressUpdate, sendCompletion, sendError } from './progress/route';
+import { sendProgressUpdate, sendCompletion, sendError } from './progress/stream-manager';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
-export async function POST(request: NextRequest) {
-  try {
-    const { youtubeUrl, format, sessionId } = await request.json();
-    const ffmpegAvailable = await checkFFmpegAvailability();
-    if (!ffmpegAvailable) {
-      console.log('⚠️ FFmpeg not available, will skip video+audio combination');
+const execPromise = promisify(exec);
+
+// Initialize yt-dlp with the binary path
+const ytDlpPath = join(process.cwd(), 'yt-dlp.exe');
+let ytDlp: YTDlpWrap;
+
+try {
+  ytDlp = new YTDlpWrap(ytDlpPath);
+  console.log('✅ yt-dlp initialized successfully');
+} catch (error) {
+  console.error('❌ Failed to initialize yt-dlp:', error);
+}
+
+// Utility function to get video info with yt-dlp
+async function getVideoInfo(youtubeUrl: string, retries = 3): Promise<any> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log(`🔍 Getting video info (attempt ${attempt}/${retries})...`);
+
+      const info = await ytDlp.getVideoInfo(youtubeUrl);
+      console.log('✅ Successfully got video info');
+      return info;
+
+    } catch (error) {
+      console.log(`❌ Attempt ${attempt} failed:`, error instanceof Error ? error.message : String(error));
+      
+      if (attempt === retries) {
+        throw new Error(`Failed to get video info after ${retries} attempts: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      
+      // Wait before retry
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
     }
-    if (!youtubeUrl || !format) {
+  }
+}
+
+// Function to download video with yt-dlp
+async function downloadWithYtDlp(
+  youtubeUrl: string,
+  outputPath: string,
+  format: 'video' | 'audio',
+  quality: string = 'best',
+  onProgress?: (progress: number) => void
+): Promise<{ filePath: string; extension: string; filename: string }> {
+  try {
+    const sanitizedTitle = 'download-' + randomUUID();
+    const outputTemplate = join(outputPath, `${sanitizedTitle}.%(ext)s`);
+    
+    let formatSelector: string;
+    let preferredExtensions: string[];
+    
+    if (format === 'video') {
+      // Prefer combined formats (video+audio) over separate streams
+      if (quality === 'best') {
+        // Try combined formats first, prioritizing more compatible codecs
+        formatSelector = 'best[ext=mp4][vcodec!=none][acodec!=none]/best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best';
+      } else {
+        const height = quality.replace('p', '');
+        // Try combined format at specific height first
+        formatSelector = `best[ext=mp4][height<=${height}][vcodec!=none][acodec!=none]/bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}]`;
+      }
+      preferredExtensions = ['.mp4', '.mkv', '.webm', '.m4v'];
+    } else {
+      // Download best audio and convert to MP3
+      formatSelector = 'bestaudio[ext=m4a]/bestaudio/best';
+      preferredExtensions = ['.mp3', '.m4a', '.webm', '.opus'];
+    }
+
+    console.log(`🚀 Starting download with format: ${formatSelector}`);
+    console.log(`📁 Output template: ${outputTemplate}`);
+    console.log(`🎯 Preferred extensions: ${preferredExtensions.join(', ')}`);
+    
+    const args = [
+      '--format', formatSelector,
+      '--output', outputTemplate,
+      '--no-playlist',
+      // Add headers and user agent to avoid 403 errors
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      '--referer', 'https://www.youtube.com/',
+      '--add-header', 'Accept-Language:en-US,en;q=0.9',
+      '--add-header', 'Accept-Encoding:gzip, deflate, br',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      '--add-header', 'Connection:keep-alive',
+      '--add-header', 'Upgrade-Insecure-Requests:1',
+      '--add-header', 'Sec-Fetch-Dest:document',
+      '--add-header', 'Sec-Fetch-Mode:navigate',
+      '--add-header', 'Sec-Fetch-Site:none',
+      // Network options to avoid rate limiting
+      '--sleep-interval', '1',
+      '--max-sleep-interval', '3',
+      '--socket-timeout', '30',
+      // Add retry options
+      '--retries', '5',
+      '--fragment-retries', '5',
+      // Try to use different extractors
+      '--extractor-args', 'youtube:player_client=android'
+    ];
+
+    // Add format-specific options
+    if (format === 'video') {
+      // For video: merge video+audio to MP4
+      args.push('--merge-output-format', 'mp4');
+    } else {
+      // For audio: extract audio and convert to MP3
+      args.push('--extract-audio', '--audio-format', 'mp3', '--audio-quality', '192K');
+    }
+
+    args.push(youtubeUrl);
+
+    const downloadPromise = ytDlp.exec(args);
+
+    // Monitor progress with simulated progress (yt-dlp-wrap doesn't expose stdout directly)
+    let progressInterval: NodeJS.Timeout | undefined;
+    let currentProgress = 0;
+    
+    if (onProgress) {
+      progressInterval = setInterval(() => {
+        // Gradual progress simulation with more realistic behavior
+        currentProgress = Math.min(95, currentProgress + Math.random() * 3 + 1);
+        onProgress(currentProgress);
+      }, 2000);
+    }
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        downloadPromise.on('close', (code: number | null) => {
+          if (progressInterval) clearInterval(progressInterval);
+          if (code === 0 || code === null) {
+            if (onProgress) onProgress(100);
+            resolve();
+          } else {
+            reject(new Error(`yt-dlp exited with code ${code}`));
+          }
+        });
+        
+        downloadPromise.on('error', (error: any) => {
+          if (progressInterval) clearInterval(progressInterval);
+          reject(error);
+        });
+      });
+    } catch (error) {
+      throw error;
+    }
+    
+    // Find the downloaded file - look for the expected extension
+    const directoryFiles = readdirSync(outputPath)
+      .filter((fileName) => fileName.includes(sanitizedTitle) && !fileName.endsWith('.part'));
+
+    console.log(`📂 Files found in download directory:`, directoryFiles);
+
+    if (directoryFiles.length === 0) {
+      throw new Error('Download completed but no output file found');
+    }
+
+    const normalizedPreferences = preferredExtensions.map((ext) => ext.toLowerCase());
+    const selectedFile = directoryFiles.find((fileName) =>
+      normalizedPreferences.includes(extname(fileName).toLowerCase())
+    ) ?? directoryFiles[0];
+
+    const resolvedPath = join(outputPath, selectedFile);
+    const fileExtension = extname(selectedFile).replace('.', '').toLowerCase();
+
+    if (!existsSync(resolvedPath)) {
+      throw new Error('Download completed but output file not accessible');
+    }
+
+    console.log(`✅ Download completed: ${resolvedPath} (${fileExtension || 'unknown'}).`);
+
+    return {
+      filePath: resolvedPath,
+      extension: fileExtension,
+      filename: selectedFile
+    };
+    
+  } catch (error) {
+    console.error('❌ Download failed:', error);
+    throw error;
+  }
+}
+
+function getContentType(extension: string, format: 'video' | 'audio'): string {
+  const normalizedExtension = extension.toLowerCase();
+  const mimeMap: Record<string, string> = {
+    mp4: 'video/mp4',
+    mkv: 'video/x-matroska',
+    webm: 'video/webm',
+    m4v: 'video/mp4',
+    mov: 'video/quicktime',
+    mp3: 'audio/mpeg',
+    m4a: 'audio/mp4',
+    opus: 'audio/ogg',
+    weba: 'audio/webm',
+  };
+
+  if (mimeMap[normalizedExtension]) {
+    return mimeMap[normalizedExtension];
+  }
+
+  return format === 'video' ? 'video/mp4' : 'audio/mpeg';
+}
+
+export async function POST(req: NextRequest) {
+  const searchParams = req.nextUrl.searchParams;
+  const sessionId = searchParams.get('sessionId');
+
+  if (!sessionId) {
+    return NextResponse.json(
+      { error: 'Session ID is required' },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const body = await req.json();
+    const { youtubeUrl, downloadType = 'single' } = body;
+
+    if (!youtubeUrl) {
+      await sendError(sessionId, 'URL de YouTube es requerida');
       return NextResponse.json(
-        { error: 'YouTube URL and format are required' },
+        { error: 'URL de YouTube es requerida' },
         { status: 400 }
       );
     }
 
     // Validate YouTube URL
-    if (!ytdl.validateURL(youtubeUrl)) {
+    const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)/;
+    if (!youtubeRegex.test(youtubeUrl)) {
+      await sendError(sessionId, 'URL de YouTube inválida');
       return NextResponse.json(
-        { error: 'Invalid YouTube URL' },
+        { error: 'URL de YouTube inválida' },
         { status: 400 }
       );
     }
 
-    console.log('Starting download for:', youtubeUrl, format);
-    
-    // Send initial progress
-    if (sessionId) {
-      sendProgressUpdate(sessionId, 5, 'Analizando video...');
-    }
+    await sendProgressUpdate(sessionId, 10, 'Obteniendo información del video...');
 
-    // Configure ytdl with Spanish language preference
-    const info = await ytdl.getInfo(youtubeUrl, {
-      lang: 'es',
-      requestOptions: {
-        headers: {
-          'Accept-Language': 'es,es-ES;q=0.9,en;q=0.8'
+    // Get video information
+    let videoInfo;
+    try {
+      videoInfo = await getVideoInfo(youtubeUrl);
+    } catch (error) {
+      let errorMsg = 'Error al obtener información del video';
+      let statusCode = 500;
+      
+      if (error instanceof Error) {
+        const errorStr = error.message.toLowerCase();
+        
+        if (errorStr.includes('403') || errorStr.includes('forbidden')) {
+          errorMsg = 'Acceso denegado al video. YouTube está bloqueando las descargas. Intenta con otro video o más tarde.';
+          statusCode = 403;
+        } else if (errorStr.includes('404') || errorStr.includes('not found')) {
+          errorMsg = 'Video no encontrado. Verifica que la URL sea correcta y que el video esté disponible.';
+          statusCode = 404;
+        } else if (errorStr.includes('429') || errorStr.includes('too many requests')) {
+          errorMsg = 'Demasiadas solicitudes. Espera un momento antes de intentar de nuevo.';
+          statusCode = 429;
+        } else if (errorStr.includes('private') || errorStr.includes('unavailable')) {
+          errorMsg = 'Este video es privado o no está disponible.';
+          statusCode = 403;
+        } else if (errorStr.includes('age') || errorStr.includes('restricted')) {
+          errorMsg = 'Este video tiene restricciones de edad. No se puede descargar.';
+          statusCode = 403;
+        } else {
+          errorMsg = `${errorMsg}: ${error.message}`;
         }
       }
+      
+      await sendError(sessionId, errorMsg);
+      return NextResponse.json(
+        { error: errorMsg },
+        { status: statusCode }
+      );
+    }
+
+    const videoTitle = videoInfo.title || 'video';
+    const videoId = videoInfo.id || randomUUID();
+
+    if (downloadType === 'dual') {
+      return await handleDualDownload(youtubeUrl, videoInfo, sessionId);
+    } else {
+      return await handleSingleDownload(youtubeUrl, videoInfo, sessionId, body.format, body.quality);
+    }
+
+  } catch (error) {
+    console.error('Error in download API:', error);
+    await sendError(sessionId, 'Error interno del servidor');
+    return NextResponse.json(
+      { error: 'Error interno del servidor' },
+      { status: 500 }
+    );
+  }
+}
+
+async function handleSingleDownload(
+  youtubeUrl: string,
+  videoInfo: any,
+  sessionId: string,
+  format: string,
+  quality: string
+) {
+  try {
+    const videoTitle = videoInfo.title || 'video';
+    const tempDir = tmpdir();
+    const downloadDir = join(tempDir, `download-${randomUUID()}`);
+    
+    // Create download directory
+    await execPromise(`mkdir "${downloadDir}"`);
+
+    await sendProgressUpdate(sessionId, 30, 'Iniciando descarga...');
+
+    let downloadResult: { filePath: string; extension: string; filename: string };
+    let finalFilename: string;
+    let contentType: string;
+    const safeTitle = `${videoTitle.replace(/[<>:"/\\|?*]/g, '_')}`;
+
+    if (format === 'video') {
+      // Download video directly - yt-dlp produces perfect files
+      downloadResult = await downloadWithYtDlp(
+        youtubeUrl,
+        downloadDir,
+        'video',
+        quality,
+        (progress) => {
+          const adjustedProgress = 30 + (progress * 0.65); // 30% to 95%
+          sendProgressUpdate(sessionId, adjustedProgress, `Descargando video: ${progress.toFixed(1)}%`);
+        }
+      );
+      const detectedExtension = downloadResult.extension || 'mp4';
+      finalFilename = `${safeTitle}.${detectedExtension}`;
+      contentType = getContentType(detectedExtension, 'video');
+    } else {
+      // Download audio - yt-dlp will automatically convert to MP3
+      downloadResult = await downloadWithYtDlp(
+        youtubeUrl,
+        downloadDir,
+        'audio',
+        quality,
+        (progress) => {
+          const adjustedProgress = 30 + (progress * 0.65); // 30% to 95%
+          sendProgressUpdate(sessionId, adjustedProgress, `Descargando y convirtiendo audio: ${progress.toFixed(1)}%`);
+        }
+      );
+      const detectedExtension = downloadResult.extension || 'mp3';
+      finalFilename = `${safeTitle}.${detectedExtension}`;
+      contentType = getContentType(detectedExtension, 'audio');
+    }
+
+    await sendProgressUpdate(sessionId, 95, 'Preparando descarga...');
+
+    // Read file using readFileSync for simplicity
+    const fileBuffer = readFileSync(downloadResult.filePath);
+
+    // Cleanup
+    try {
+      await execPromise(`rmdir /s /q "${downloadDir}"`);
+    } catch (cleanupError) {
+      console.warn('Failed to cleanup temp directory:', cleanupError);
+    }
+
+    await sendCompletion(sessionId, 'Descarga completada exitosamente');
+
+    return new NextResponse(new Uint8Array(fileBuffer), {
+      headers: {
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(finalFilename)}"`,
+        'Content-Length': fileBuffer.length.toString(),
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'no-cache',
+        // Add headers to prevent corruption
+        'X-Content-Type-Options': 'nosniff',
+      },
     });
 
-    if (sessionId) {
-      sendProgressUpdate(sessionId, 10, 'Seleccionando mejor formato...');
-    }
-
-    // Find the requested format
-    let selectedFormat;
+  } catch (error) {
+    let errorMsg = 'Error en la descarga';
+    let statusCode = 500;
     
-    if (format.includes('kbps')) {
-      // Audio format - prioritize Spanish audio
-      const audioFormats = info.formats.filter(f => 
-        f.hasAudio && 
-        !f.hasVideo && 
-        f.audioBitrate && 
-        (f.container === 'mp4' || f.container === 'webm' || f.mimeType?.includes('audio')) &&
-        `${Math.floor(Number(f.audioBitrate))}kbps` === format
-      );
+    if (error instanceof Error) {
+      const errorStr = error.message.toLowerCase();
       
-      console.log('Looking for audio format:', format);
-      console.log('Available audio formats:', audioFormats.map(f => ({
-        bitrate: `${Math.floor(Number(f.audioBitrate))}kbps`,
-        container: f.container,
-        hasSpanish: f.url?.includes('&lang=es') || f.url?.includes('&language=es') || f.url?.includes('&hl=es'),
-        audioTrack: (f as any).audioTrack ? {
-          displayName: (f as any).audioTrack.displayName,
-          id: (f as any).audioTrack.id,
-          isAutoDubbed: (f as any).audioTrack.isAutoDubbed
-        } : null
-      })));
-      
-      // Try to find Spanish audio first, then fall back to any available
-      selectedFormat = audioFormats.find(f => isSpanishAudio(f)) || audioFormats[0];
-      
-    } else {
-      // Video format - buscar formato combinado primero, luego combinar video+audio
-      selectedFormat = info.formats.find(f => 
-        f.hasVideo && 
-        f.hasAudio && 
-        f.qualityLabel === format &&
-        (f.container === 'mp4' || f.container === 'webm')
-      );
-      
-      // Si no hay formato combinado, encontrar el mejor video y mejor audio para combinar
-      if (!selectedFormat) {
-        const videoFormat = info.formats.find(f => 
-          f.hasVideo && 
-          !f.hasAudio && 
-          f.qualityLabel === format &&
-          f.container === 'mp4' // Preferir MP4 para mejor compatibilidad
-        );
-        
-        const audioFormat = info.formats
-          .filter(f => 
-            f.hasAudio && 
-            !f.hasVideo && 
-            f.container === 'mp4' &&
-            f.audioBitrate
-          )
-          .sort((a, b) => {
-            // Priorizar audio en español
-            const aIsSpanish = isSpanishAudio(a);
-            const bIsSpanish = isSpanishAudio(b);
-            
-            if (aIsSpanish && !bIsSpanish) return -1;
-            if (!aIsSpanish && bIsSpanish) return 1;
-            
-            // Si ambos son españoles o ninguno, ordenar por calidad
-            return Number(b.audioBitrate) - Number(a.audioBitrate);
-          })[0]; // Mejor calidad de audio (priorizando español)
-
-        if (videoFormat && audioFormat) {
-          console.log(`Combining video ${format} with audio ${audioFormat.audioBitrate}kbps`);
-          console.log('Selected audio format details:', {
-            bitrate: audioFormat.audioBitrate + 'kbps',
-            container: audioFormat.container,
-            isSpanish: isSpanishAudio(audioFormat),
-            audioTrack: (audioFormat as any).audioTrack ? {
-              displayName: (audioFormat as any).audioTrack.displayName,
-              id: (audioFormat as any).audioTrack.id
-            } : 'N/A'
-          });
-          return await combineVideoAudio(youtubeUrl, videoFormat, audioFormat, sessionId);
-        }
+      if (errorStr.includes('403') || errorStr.includes('forbidden')) {
+        errorMsg = 'YouTube está bloqueando las descargas. Esto puede suceder por:\n• Uso excesivo del servicio\n• Video con restricciones\n• Bloqueo geográfico\n\nIntenta con otro video o espera unos minutos.';
+        statusCode = 403;
+      } else if (errorStr.includes('404') || errorStr.includes('not found')) {
+        errorMsg = 'Video no encontrado o no disponible para descarga.';
+        statusCode = 404;
+      } else if (errorStr.includes('timeout')) {
+        errorMsg = 'La descarga tardó demasiado tiempo. Intenta de nuevo.';
+        statusCode = 408;
+      } else if (errorStr.includes('network') || errorStr.includes('connection')) {
+        errorMsg = 'Error de conexión. Verifica tu conexión a internet e intenta de nuevo.';
+        statusCode = 503;
+      } else {
+        errorMsg = `Error en la descarga: ${error.message}`;
       }
-      
-      console.log('Looking for video format:', format);
-      console.log('Selected format details:', {
-        quality: selectedFormat?.qualityLabel,
-        hasAudio: selectedFormat?.hasAudio,
-        hasVideo: selectedFormat?.hasVideo,
-        container: selectedFormat?.container
+    }
+    
+    await sendError(sessionId, errorMsg);
+    return NextResponse.json(
+      { error: errorMsg },
+      { status: statusCode }
+    );
+  }
+}
+
+async function handleDualDownload(
+  youtubeUrl: string,
+  videoInfo: any,
+  sessionId: string
+) {
+  try {
+    const videoTitle = videoInfo.title || 'video';
+    const tempDir = tmpdir();
+    const downloadDir = join(tempDir, `download-dual-${randomUUID()}`);
+    
+    // Create download directory
+    await execPromise(`mkdir "${downloadDir}"`);
+
+    await sendProgressUpdate(sessionId, 20, 'Descargando video...');
+
+    // Download video
+    const videoResult = await downloadWithYtDlp(
+      youtubeUrl,
+      downloadDir,
+      'video',
+      'best',
+      (progress) => {
+        const adjustedProgress = 20 + (progress * 0.3); // 20% to 50%
+        sendProgressUpdate(sessionId, adjustedProgress, `Descargando video: ${progress.toFixed(1)}%`);
+      }
+    );
+
+    await sendProgressUpdate(sessionId, 55, 'Descargando audio...');
+
+    // Download audio
+    const audioResult = await downloadWithYtDlp(
+      youtubeUrl,
+      downloadDir,
+      'audio',
+      'best',
+      (progress) => {
+        const adjustedProgress = 55 + (progress * 0.25); // 55% to 80%
+        sendProgressUpdate(sessionId, adjustedProgress, `Descargando audio: ${progress.toFixed(1)}%`);
+      }
+    );
+
+    const safeTitle = `${videoTitle.replace(/[<>:"/\\|?*]/g, '_')}`;
+    const videoExtension = videoResult.extension || 'mp4';
+    let audioExtension = audioResult.extension || 'mp3';
+    let audioFilePath = audioResult.filePath;
+
+    if (audioExtension !== 'mp3') {
+      await sendProgressUpdate(sessionId, 85, 'Convirtiendo audio a MP3...');
+
+      const mp3File = join(downloadDir, `${safeTitle}-${randomUUID()}.mp3`);
+
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(audioFilePath)
+          .toFormat('mp3')
+          .audioBitrate('192k')
+          .save(mp3File)
+          .on('end', () => {
+            console.log('✅ MP3 conversion completed');
+            resolve();
+          })
+          .on('error', (err) => {
+            console.error('❌ MP3 conversion failed:', err);
+            reject(err);
+          });
       });
-      console.log('Available video-only formats:', info.formats
-        .filter(f => f.hasVideo && !f.hasAudio && f.qualityLabel)
-        .map(f => ({ 
-          quality: f.qualityLabel, 
-          container: f.container
-        }))
-      );
+
+      audioFilePath = mp3File;
+      audioExtension = 'mp3';
+    } else {
+      await sendProgressUpdate(sessionId, 85, 'Preparando archivos...');
     }
 
-    if (!selectedFormat) {
+    await sendProgressUpdate(sessionId, 95, 'Preparando archivos...');
+
+    // Return metadata for sequential downloads
+    const videoFilename = `${safeTitle}.${videoExtension}`;
+    const audioFilename = `${safeTitle}.${audioExtension}`;
+
+    // Store files temporarily for sequential download
+    const videoTempPath = join(tempDir, `temp-video-${randomUUID()}.${videoExtension}`);
+    const audioTempPath = join(tempDir, `temp-audio-${randomUUID()}.${audioExtension}`);
+
+    // Copy files to temp paths
+    await execPromise(`copy "${videoResult.filePath}" "${videoTempPath}"`);
+    await execPromise(`copy "${audioFilePath}" "${audioTempPath}"`);
+
+    // Cleanup download directory
+    try {
+      await execPromise(`rmdir /s /q "${downloadDir}"`);
+    } catch (cleanupError) {
+      console.warn('Failed to cleanup download directory:', cleanupError);
+    }
+
+    await sendCompletion(sessionId, 'Ambos archivos preparados');
+
+    return NextResponse.json({
+      success: true,
+      message: 'Ambos archivos están listos para descarga',
+      files: [
+        {
+          type: 'video',
+          filename: videoFilename,
+          tempPath: videoTempPath,
+          contentType: getContentType(videoExtension, 'video')
+        },
+        {
+          type: 'audio', 
+          filename: audioFilename,
+          tempPath: audioTempPath,
+          contentType: getContentType(audioExtension, 'audio')
+        }
+      ]
+    });
+
+  } catch (error) {
+    const errorMsg = `Error en la descarga dual: ${error instanceof Error ? error.message : String(error)}`;
+    await sendError(sessionId, errorMsg);
+    return NextResponse.json(
+      { error: errorMsg },
+      { status: 500 }
+    );
+  }
+}
+
+// Handler para descargar archivos individuales de la descarga dual
+export async function GET(req: NextRequest) {
+  const searchParams = req.nextUrl.searchParams;
+  const tempPath = searchParams.get('tempPath');
+  const filename = searchParams.get('filename');
+  const contentType = searchParams.get('contentType');
+
+  if (!tempPath || !filename || !contentType) {
+    return NextResponse.json(
+      { error: 'Missing required parameters' },
+      { status: 400 }
+    );
+  }
+
+  try {
+    if (!existsSync(tempPath)) {
       return NextResponse.json(
-        { error: 'Requested format not found' },
+        { error: 'File not found' },
         { status: 404 }
       );
     }
 
-    // Generate filename
-    const isAudio = format.includes('kbps');
-    const sanitizedTitle = info.videoDetails.title
-      .replace(/[^\w\s-]/g, '')
-      .trim()
-      .substring(0, 100); // Limit filename length
-    const fileName = `${sanitizedTitle}.${isAudio ? 'mp3' : 'mp4'}`;
+    // Read file using readFileSync for simplicity
+    const fileBuffer = readFileSync(tempPath);
 
-    // Stream the video/audio content
-    const streamOptions = { 
-      format: selectedFormat
-    };
-    
-    console.log('Streaming with options:', streamOptions);
-    
-    if (sessionId) {
-      sendProgressUpdate(sessionId, 15, isAudio ? 'Descargando audio...' : 'Descargando video...');
+    // Cleanup temp file
+    try {
+      unlinkSync(tempPath);
+    } catch (cleanupError) {
+      console.warn('Failed to cleanup temp file:', cleanupError);
     }
-    
-    const videoStream = ytdl(youtubeUrl, streamOptions);
 
-    // Add progress tracking for simple downloads
-    let downloadProgress = 0;
-    videoStream.on('progress', (chunkLength, downloaded, total) => {
-      const progress = Math.floor((downloaded / total) * 100);
-      if (progress > downloadProgress && sessionId) {
-        downloadProgress = progress;
-        const message = isAudio ? `Descargando audio... ${progress}%` : `Descargando video... ${progress}%`;
-        sendProgressUpdate(sessionId, 15 + (progress * 0.8), message);
-      }
-    });
-
-    // Set appropriate headers for file download
-    const headers = new Headers();
-    headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
-    headers.set('Content-Type', isAudio ? 'audio/mp4' : 'video/mp4');
-
-    // Create a readable stream for the response
-    const readableStream = new ReadableStream({
-      start(controller) {
-        videoStream.on('data', (chunk) => {
-          controller.enqueue(chunk);
-        });
-        
-        videoStream.on('end', () => {
-          if (sessionId) {
-            sendCompletion(sessionId, 'Descarga completada exitosamente');
-          }
-          controller.close();
-        });
-        
-        videoStream.on('error', (error) => {
-          console.error('Stream error:', error);
-          if (sessionId) {
-            sendError(sessionId, 'Error durante la descarga: ' + error.message);
-          }
-          controller.error(error);
-        });
+    return new NextResponse(new Uint8Array(fileBuffer), {
+      headers: {
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+        'Content-Length': fileBuffer.length.toString(),
       },
     });
 
-    return new Response(readableStream, {
-      headers,
-    });
-
   } catch (error) {
-    console.error('Download error:', error);
-    
-    // Get sessionId from the request if available
-    try {
-      const body = await request.clone().json();
-      if (body.sessionId) {
-        sendError(body.sessionId, 'Error durante la descarga: ' + (error instanceof Error ? error.message : 'Error desconocido'));
-      }
-    } catch (e) {
-      // Ignore JSON parsing errors in error handler
-    }
-    
+    console.error('Error serving file:', error);
     return NextResponse.json(
-      { error: 'Failed to download video' },
+      { error: 'Error serving file' },
       { status: 500 }
     );
   }
-  const execAsync = promisify(exec);
-  // Función para verificar si FFmpeg está disponible
-async function checkFFmpegAvailability(): Promise<boolean> {
-  try {
-    await execAsync('ffmpeg -version');
-    console.log('✅ FFmpeg is available');
-    return true;
-  } catch (error) {
-    console.log('❌ FFmpeg is not available:', error);
-    return false;
-  }
-}
-}
-
-// Función para combinar video y audio usando FFmpeg con archivos temporales
-async function combineVideoAudio(youtubeUrl: string, videoFormat: any, audioFormat: any, sessionId?: string): Promise<NextResponse> {
-  const tempId = randomUUID();
-  const tempDir = tmpdir();
-  const videoPath = join(tempDir, `video_${tempId}.mp4`);
-  const audioPath = join(tempDir, `audio_${tempId}.mp4`);
-  const outputPath = join(tempDir, `output_${tempId}.mp4`);
-
-  return new Promise((resolve, reject) => {
-    console.log('Starting video and audio download to temp files...');
-    
-    // Send progress update
-    if (sessionId) {
-      sendProgressUpdate(sessionId, 15, 'Descargando video...');
-    }
-    
-    // Download video stream to temp file
-    const videoStream = ytdl(youtubeUrl, { format: videoFormat });
-    const videoFile = createWriteStream(videoPath);
-    
-    let videoProgress = 0;
-    videoStream.on('progress', (chunkLength, downloaded, total) => {
-      const progress = Math.floor((downloaded / total) * 100);
-      if (progress > videoProgress && sessionId) {
-        videoProgress = progress;
-        sendProgressUpdate(sessionId, 15 + (progress * 0.35), `Descargando video... ${progress}%`);
-      }
-    });
-    
-    videoStream.pipe(videoFile);
-    
-    videoStream.on('end', () => {
-      console.log('Video download completed, starting audio download...');
-      
-      if (sessionId) {
-        sendProgressUpdate(sessionId, 50, 'Descargando audio...');
-      }
-      
-      // Download audio stream to temp file
-      const audioStream = ytdl(youtubeUrl, { format: audioFormat });
-      const audioFile = createWriteStream(audioPath);
-      
-      let audioProgress = 0;
-      audioStream.on('progress', (chunkLength, downloaded, total) => {
-        const progress = Math.floor((downloaded / total) * 100);
-        if (progress > audioProgress && sessionId) {
-          audioProgress = progress;
-          sendProgressUpdate(sessionId, 50 + (progress * 0.25), `Descargando audio... ${progress}%`);
-        }
-      });
-      
-      audioStream.pipe(audioFile);
-      
-      audioStream.on('end', () => {
-        console.log('Audio download completed, starting FFmpeg combination...');
-        
-        if (sessionId) {
-          sendProgressUpdate(sessionId, 75, 'Mezclando audio y video... 0%');
-        }
-        
-        // Combine using FFmpeg
-        ffmpeg()
-          .input(videoPath)
-          .input(audioPath)
-          .outputOptions([
-            '-c:v', 'copy',  // Copy video codec
-            '-c:a', 'aac',   // Convert audio to AAC
-            '-strict', 'experimental'
-          ])
-          .output(outputPath)
-          .on('start', (commandLine) => {
-            console.log('FFmpeg started:', commandLine);
-          })
-          .on('progress', (progress) => {
-            if (progress.percent && sessionId) {
-              const ffmpegProgress = Math.floor(progress.percent);
-              sendProgressUpdate(sessionId, 75 + (ffmpegProgress * 0.24), `Mezclando audio y video... ${ffmpegProgress}%`);
-              console.log(`Processing: ${progress.percent.toFixed(1)}% done`);
-            }
-          })
-          .on('end', () => {
-            console.log('FFmpeg combination completed successfully');
-            
-            if (sessionId) {
-              sendProgressUpdate(sessionId, 99, 'Finalizando descarga...');
-            }
-            
-            // Stream the result back to client
-            const outputStream = createReadStream(outputPath);
-            const fileName = `video_${videoFormat.qualityLabel}_combined.mp4`;
-            
-            const headers = new Headers({
-              'Content-Type': 'video/mp4',
-              'Content-Disposition': `attachment; filename="${fileName}"`,
-              'Cache-Control': 'no-cache',
-            });
-            
-            // Clean up temp files after streaming
-            outputStream.on('end', () => {
-              setTimeout(() => {
-                try {
-                  unlinkSync(videoPath);
-                  unlinkSync(audioPath);
-                  unlinkSync(outputPath);
-                  console.log('Temp files cleaned up');
-                } catch (err) {
-                  console.error('Error cleaning temp files:', err);
-                }
-              }, 1000);
-            });
-            
-            if (sessionId) {
-              sendCompletion(sessionId, 'Descarga completada exitosamente');
-            }
-            
-            resolve(new NextResponse(outputStream as any, { headers }));
-          })
-          .on('error', (err) => {
-            console.error('FFmpeg error:', err.message);
-            
-            if (sessionId) {
-              sendError(sessionId, 'Error al combinar video y audio: ' + err.message);
-            }
-            
-            // Clean up temp files on error
-            try {
-              unlinkSync(videoPath);
-              unlinkSync(audioPath);
-              if (outputPath) unlinkSync(outputPath);
-            } catch (cleanupErr) {
-              console.error('Error cleaning temp files:', cleanupErr);
-            }
-            
-            reject(new NextResponse(JSON.stringify({ 
-              error: 'Failed to combine video and audio: ' + err.message 
-            }), { 
-              status: 500,
-              headers: { 'Content-Type': 'application/json' }
-            }));
-          })
-          .run();
-      });
-      
-      audioStream.on('error', (err) => {
-        console.error('Audio download error:', err);
-        if (sessionId) {
-          sendError(sessionId, 'Error al descargar audio: ' + err.message);
-        }
-        reject(new NextResponse(JSON.stringify({ 
-          error: 'Failed to download audio: ' + err.message 
-        }), { 
-          status: 500,
-          headers: { 'Content-Type': 'application/json' }
-        }));
-      });
-    });
-    
-    videoStream.on('error', (err) => {
-      console.error('Video download error:', err);
-      if (sessionId) {
-        sendError(sessionId, 'Error al descargar video: ' + err.message);
-      }
-      reject(new NextResponse(JSON.stringify({ 
-        error: 'Failed to download video: ' + err.message 
-      }), { 
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      }));
-    });
-  });
-}
-
-// Función para detectar si un formato de audio es en español
-function isSpanishAudio(format: any): boolean {
-  // Verificar en la URL si hay indicadores de idioma español
-  if (format.url) {
-    const url = format.url;
-    if (url.includes('&lang=es') || 
-        url.includes('&language=es') || 
-        url.includes('&hl=es') ||
-        url.includes('lang%3Des') ||
-        url.includes('es-ES') ||
-        url.includes('&es&') ||
-        url.includes('spanish')) {
-      return true;
-    }
-  }
-  
-  // Verificar en audioTrack (específico de YouTube)
-  const audioTrack = format.audioTrack;
-  if (audioTrack) {
-    const displayName = audioTrack.displayName;
-    const id = audioTrack.id;
-    
-    if (displayName && (
-          displayName.includes('Spanish') ||
-          displayName.includes('Español') ||
-          displayName.includes('español') ||
-          displayName.includes('spa'))) {
-      return true;
-    }
-    
-    if (id && (id.includes('es') || id.includes('spa'))) {
-      return true;
-    }
-  }
-  
-  // Verificar en metadatos de idioma si existen
-  if (format.language) {
-    const lang = format.language.toLowerCase();
-    return lang === 'es' || lang === 'spa' || lang === 'spanish' || lang === 'español';
-  }
-  
-  // Verificar en el audioCodec o mimeType si hay indicadores
-  if (format.audioCodec) {
-    const codec = format.audioCodec.toLowerCase();
-    if (codec.includes('es') || codec.includes('spanish')) {
-      return true;
-    }
-  }
-  
-  return false;
 }
