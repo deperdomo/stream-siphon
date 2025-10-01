@@ -16,7 +16,8 @@ WORKDIR /app
 COPY package*.json ./
 
 # Instalar dependencias de producción
-RUN npm ci --only=production
+# Usar npm install como fallback si npm ci falla
+RUN npm ci --omit=dev || npm install --omit=dev
 
 # Copiar el resto de la aplicación
 COPY . .
