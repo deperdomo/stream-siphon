@@ -148,11 +148,37 @@ src/
 
 ## 🌐 Deployment
 
-### Vercel
+### Opción 1: Railway.app ⭐ (Recomendado para producción)
 
-El proyecto está desplegado en Vercel y está disponible en: **https://stream-siphon.vercel.app/**
+**Railway soporta completamente FFmpeg, yt-dlp y procesamiento de video pesado.**
 
-Para desplegar tu propia versión:
+```powershell
+# 1. Verificar que todo está listo
+npm run check-railway
+
+# 2. Ejecutar script de deploy automatizado
+./deploy-railway.ps1
+```
+
+**📖 Guía completa:** Lee [DEPLOY_RAILWAY.md](./DEPLOY_RAILWAY.md) para instrucciones paso a paso.
+
+**🔧 ¿Problemas?:** Consulta [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)
+
+**⚡ Quick Start:** Lee [RAILWAY_QUICKSTART.md](./RAILWAY_QUICKSTART.md)
+
+---
+
+### Opción 2: Vercel (Limitaciones importantes)
+
+⚠️ **Advertencia:** Vercel tiene limitaciones críticas:
+- ⏱️ Tiempo de ejecución máximo: 10-60 segundos
+- ❌ No soporta binarios personalizados (yt-dlp.exe)
+- ❌ No soporta FFmpeg para combinación de video/audio
+- ❌ **No funciona el modo "Ambos" (video+audio combinado)**
+
+El proyecto está desplegado en Vercel para DEMO: **https://stream-siphon.vercel.app/**
+
+Para desplegar tu propia versión en Vercel (solo para demo):
 
 1. **Fork el repositorio**
 2. **Conecta con Vercel**:
@@ -160,6 +186,33 @@ Para desplegar tu propia versión:
    - Importa el repositorio
    - Configura las variables de entorno si es necesario
 3. **Deploy automático**: Vercel se encarga del build y deployment
+
+---
+
+### Opción 3: VPS Propio (Máximo control)
+
+Para producción seria con alto tráfico:
+- **DigitalOcean** ($6/mes)
+- **Hetzner** ($5/mes)
+- **Contabo** ($4.50/mes)
+
+Control total, sin límites de tiempo de ejecución ni restricciones.
+
+---
+
+## 📁 Archivos de Deployment Incluidos
+
+- `Dockerfile` - Configuración Docker con FFmpeg y yt-dlp
+- `.dockerignore` - Optimización de build
+- `railway.json` - Configuración de Railway
+- `check-railway-ready.js` - Script de verificación pre-deploy
+- `deploy-railway.ps1` - Script automatizado de deploy
+- `DEPLOY_RAILWAY.md` - 📘 Guía detallada paso a paso
+- `RAILWAY_QUICKSTART.md` - ⚡ Guía rápida
+- `TROUBLESHOOTING.md` - 🔧 Solución de problemas
+- `DEPLOYMENT_README.md` - 📋 Resumen de deployment
+
+---
 
 ## 🤝 Contribuciones
 

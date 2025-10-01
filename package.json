@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "node server.js",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check-railway": "node check-railway-ready.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^4.1.3",
