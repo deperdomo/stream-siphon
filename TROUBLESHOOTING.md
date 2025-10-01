@@ -104,14 +104,27 @@ yt-dlp: command not found
 
 #### 1. Verificar Dockerfile
 
-Asegúrate de que el `Dockerfile` tiene:
+Asegúrate de que el `Dockerfile` tiene el flag `--break-system-packages`:
 
 ```dockerfile
 RUN apk add --no-cache \
+    ffmpeg \
     python3 \
     py3-pip \
-    && pip3 install --no-cache-dir yt-dlp
+    && pip3 install --break-system-packages --no-cache-dir yt-dlp
 ```
+
+**Nota:** Alpine 3.22+ requiere `--break-system-packages` debido a PEP 668.
+
+#### 2. Error: "externally-managed-environment"
+
+Si ves este error:
+```
+error: externally-managed-environment
+× This environment is externally managed
+```
+
+**Solución:** Agrega `--break-system-packages` al comando pip3 en el Dockerfile.
 
 #### 2. Reconstruir desde cero
 
