@@ -126,7 +126,9 @@ async function downloadWithYtDlp(
       preferredExtensions = ['.mp4', '.webm', '.mkv', '.m4v'];
     } else {
       // Download best audio and convert to MP3
-      formatSelector = 'bestaudio[ext=m4a]/bestaudio/best';
+      // Prioritize original language or Spanish audio tracks over English
+      // Try non-English first, then Spanish variants, then any available audio
+      formatSelector = 'bestaudio[language!=en][ext=m4a]/bestaudio[language=es]/bestaudio[language=es-419]/bestaudio[language=es-US]/bestaudio[ext=m4a]/bestaudio/best';
       preferredExtensions = ['.mp3', '.m4a', '.webm', '.opus'];
     }
 
@@ -140,8 +142,8 @@ async function downloadWithYtDlp(
       '--no-playlist',
       // Add verbose logging to see which format is selected
       '--print-to-file', 'Selected format: %(format_id)s - %(format)s - %(resolution)s - %(vcodec)s/%(acodec)s', join(outputPath, 'format-debug.txt'),
-      // Force quality sorting - prioritize resolution, fps, and codec quality
-      '--format-sort', 'res:1080,fps,vcodec:h264,acodec',
+      // Force quality sorting - prioritize resolution, fps, codec quality, and Spanish language
+      '--format-sort', 'res:1080,fps,vcodec:h264,acodec,lang:es',
       // Add headers and user agent to avoid 403 errors
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       '--referer', 'https://www.youtube.com/',
@@ -160,9 +162,9 @@ async function downloadWithYtDlp(
       // Add retry options
       '--retries', '5',
       '--fragment-retries', '5',
-      // Use android_vr client which typically has better format access
-      // Fallback to android and web if needed
-      '--extractor-args', 'youtube:player_client=android_vr,android',
+      // Use android_vr client for better format access and set language preference
+      // Prioritize Spanish (es), Latin American Spanish (es-419), then undefined (original)
+      '--extractor-args', 'youtube:player_client=android_vr,android;lang=es,es-419,und',
       // Skip unavailable fragments instead of failing
       '--skip-unavailable-fragments'
     ];
