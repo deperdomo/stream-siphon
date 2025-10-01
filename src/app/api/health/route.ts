@@ -13,7 +13,9 @@ export async function GET() {
     const startTime = Date.now();
     
     try {
-      const ytDlpPath = join(process.cwd(), 'yt-dlp.exe');
+      const ytDlpPath = process.platform === 'win32' 
+        ? join(process.cwd(), 'yt-dlp.exe')
+        : 'yt-dlp';
       const ytDlp = new YTDlpWrap(ytDlpPath);
       
       const basicInfo = await ytDlp.getVideoInfo(testUrl);

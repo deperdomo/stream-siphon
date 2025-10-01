@@ -74,8 +74,10 @@ export async function performYoutubeAnalysis(
     console.log('Environment:', process.env.NODE_ENV);
     console.log('Platform:', process.platform);
     
-    // Initialize yt-dlp
-    const ytDlpPath = join(process.cwd(), 'yt-dlp.exe');
+    // Initialize yt-dlp (platform-aware path)
+    const ytDlpPath = process.platform === 'win32' 
+      ? join(process.cwd(), 'yt-dlp.exe')
+      : 'yt-dlp';
     const ytDlp = new YTDlpWrap(ytDlpPath);
     
     // Get video info with timeout
@@ -307,8 +309,10 @@ export async function downloadYoutubeVideo(
 
     console.log('Preparing download info:', youtubeUrl, format);
     
-    // Initialize yt-dlp
-    const ytDlpPath = join(process.cwd(), 'yt-dlp.exe');
+    // Initialize yt-dlp (platform-aware path)
+    const ytDlpPath = process.platform === 'win32' 
+      ? join(process.cwd(), 'yt-dlp.exe')
+      : 'yt-dlp';
     const ytDlp = new YTDlpWrap(ytDlpPath);
     
     // Get video info

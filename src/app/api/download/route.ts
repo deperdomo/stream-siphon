@@ -11,8 +11,10 @@ import { promisify } from 'util';
 
 const execPromise = promisify(exec);
 
-// Initialize yt-dlp with the binary path
-const ytDlpPath = join(process.cwd(), 'yt-dlp.exe');
+// Initialize yt-dlp with the binary path (platform-aware)
+const ytDlpPath = process.platform === 'win32' 
+  ? join(process.cwd(), 'yt-dlp.exe')
+  : 'yt-dlp';
 let ytDlp: YTDlpWrap;
 
 try {
