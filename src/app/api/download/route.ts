@@ -601,14 +601,14 @@ async function handleDualDownload(
     );
 
     const safeTitle = `${videoTitle.replace(/[<>:"/\\|?*]/g, '_')}`;
-    const videoExtension = videoResult.extension || 'mp4';
     let audioExtension = audioResult.extension || 'mp3';
     let audioFilePath = audioResult.filePath;
 
+    // Convert audio to MP3 if it's not already
     if (audioExtension !== 'mp3') {
-      await sendProgressUpdate(sessionId, 85, 'Convirtiendo audio a MP3...');
+      await sendProgressUpdate(sessionId, 82, 'Convirtiendo audio a MP3...');
 
-      const mp3File = join(downloadDir, `${safeTitle}-${randomUUID()}.mp3`);
+      const mp3File = join(downloadDir, `audio-${randomUUID()}.mp3`);
 
       await new Promise<void>((resolve, reject) => {
         ffmpeg(audioFilePath)
@@ -627,22 +627,41 @@ async function handleDualDownload(
 
       audioFilePath = mp3File;
       audioExtension = 'mp3';
-    } else {
-      await sendProgressUpdate(sessionId, 85, 'Preparando archivos...');
     }
 
-    await sendProgressUpdate(sessionId, 95, 'Preparando archivos...');
+    await sendProgressUpdate(sessionId, 85, 'Combinando video y audio para máxima calidad...');
+    
+    // Merge video and audio into a single MP4 file
+    const outputExtension = 'mp4';
+    const mergedFilePath = join(downloadDir, `merged-${randomUUID()}.${outputExtension}`);
+    
+    await mergeVideoAndAudio(
+      videoResult.filePath,
+      audioFilePath,
+      mergedFilePath,
+      (progress) => {
+        const adjustedProgress = 85 + (progress * 0.1); // 85% to 95%
+        sendProgressUpdate(sessionId, adjustedProgress, `Combinando: ${progress.toFixed(1)}%`);
+      }
+    );
 
-    // Return metadata for sequential downloads
-    const videoFilename = `${safeTitle}.${videoExtension}`;
+    console.log('[handleDualDownload] Video merged successfully', {
+      videoFile: videoResult.filePath,
+      audioFile: audioFilePath,
+      mergedFile: mergedFilePath,
+    });
+
+    await sendProgressUpdate(sessionId, 95, 'Preparando archivos para descarga...');
+
+    // Store both files temporarily for download
+    const mergedTempPath = join(tempDir, `temp-merged-${randomUUID()}.${outputExtension}`);
+    const audioTempPath = join(tempDir, `temp-audio-${randomUUID()}.${audioExtension}`);
+    
+    const mergedFilename = `${safeTitle}.${outputExtension}`;
     const audioFilename = `${safeTitle}.${audioExtension}`;
 
-    // Store files temporarily for sequential download
-    const videoTempPath = join(tempDir, `temp-video-${randomUUID()}.${videoExtension}`);
-    const audioTempPath = join(tempDir, `temp-audio-${randomUUID()}.${audioExtension}`);
-
     // Copy files to temp paths
-    await execPromise(`copy "${videoResult.filePath}" "${videoTempPath}"`);
+    await execPromise(`copy "${mergedFilePath}" "${mergedTempPath}"`);
     await execPromise(`copy "${audioFilePath}" "${audioTempPath}"`);
 
     // Cleanup download directory
@@ -652,20 +671,20 @@ async function handleDualDownload(
       console.warn('Failed to cleanup download directory:', cleanupError);
     }
 
-    await sendCompletion(sessionId, 'Ambos archivos preparados');
+    await sendCompletion(sessionId, 'Video completo y audio MP3 listos para descarga');
 
     return NextResponse.json({
       success: true,
-      message: 'Ambos archivos están listos para descarga',
+      message: 'Video completo y audio MP3 listos para descarga',
       files: [
         {
           type: 'video',
-          filename: videoFilename,
-          tempPath: videoTempPath,
-          contentType: getContentType(videoExtension, 'video')
+          filename: mergedFilename,
+          tempPath: mergedTempPath,
+          contentType: getContentType(outputExtension, 'video')
         },
         {
-          type: 'audio', 
+          type: 'audio',
           filename: audioFilename,
           tempPath: audioTempPath,
           contentType: getContentType(audioExtension, 'audio')

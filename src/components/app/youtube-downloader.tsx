@@ -80,6 +80,15 @@ export default function YoutubeDownloader() {
     },
   });
 
+  // Reset download state when switching between tabs (Video/Audio/Ambos)
+  React.useEffect(() => {
+    if (downloadComplete) {
+      setDownloadComplete(false);
+      setDownloadProgress(0);
+      setProgressText("");
+    }
+  }, [selectedFormatType]);
+
   const onSubmit = async (data: FormValues) => {
     setIsAnalyzing(true);
     setAnalysisResult(null);
@@ -277,61 +286,51 @@ export default function YoutubeDownloader() {
 
       // Handle download based on response type
       if (selectedFormatType === 'dual') {
-        // For dual downloads, get the metadata and download both files sequentially
+        // For dual downloads, get both video and audio files
         const dualData = await downloadResponse.json();
         eventSource.close();
         
-        setProgressText("Descargando video...");
-        setDownloadProgress(25);
+        if (!dualData.success || !dualData.files) {
+          throw new Error(dualData.error || 'Failed to prepare dual download');
+        }
         
-        // Download video first
-        const videoSessionId = `${Date.now()}-video`;
-        const videoResponse = await fetch(`/api/download?sessionId=${videoSessionId}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            youtubeUrl: form.getValues("youtubeUrl"),
-            format: dualData.video.format,
-            downloadType: 'single',
-          }),
-        });
+        // Get video and audio files from the response
+        const videoFile = dualData.files.find((f: any) => f.type === 'video');
+        const audioFile = dualData.files.find((f: any) => f.type === 'audio');
+        
+        if (!videoFile || !audioFile) {
+          throw new Error('Missing video or audio file information');
+        }
+        
+        setProgressText("Descargando video completo (MP4)...");
+        setDownloadProgress(96);
+        
+        // Download video file (MP4 with video + audio)
+        const videoResponse = await fetch(`/api/download?tempPath=${encodeURIComponent(videoFile.tempPath)}&filename=${encodeURIComponent(videoFile.filename)}&contentType=${encodeURIComponent(videoFile.contentType)}`);
         
         if (videoResponse.ok) {
           const videoBlob = await videoResponse.blob();
           const videoUrl = window.URL.createObjectURL(videoBlob);
           const videoLink = document.createElement('a');
           videoLink.href = videoUrl;
-          videoLink.download = dualData.video.filename;
+          videoLink.download = videoFile.filename;
           document.body.appendChild(videoLink);
           videoLink.click();
           document.body.removeChild(videoLink);
           window.URL.revokeObjectURL(videoUrl);
           
-          setProgressText("Descargando audio...");
-          setDownloadProgress(75);
+          setProgressText("Descargando audio (MP3)...");
+          setDownloadProgress(98);
           
-          // Download audio second
-          const audioSessionId = `${Date.now()}-audio`;
-          const audioResponse = await fetch(`/api/download?sessionId=${audioSessionId}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              youtubeUrl: form.getValues("youtubeUrl"),
-              format: dualData.audio.format,
-              downloadType: 'single',
-            }),
-          });
+          // Download audio file (MP3)
+          const audioResponse = await fetch(`/api/download?tempPath=${encodeURIComponent(audioFile.tempPath)}&filename=${encodeURIComponent(audioFile.filename)}&contentType=${encodeURIComponent(audioFile.contentType)}`);
           
           if (audioResponse.ok) {
             const audioBlob = await audioResponse.blob();
             const audioUrl = window.URL.createObjectURL(audioBlob);
             const audioLink = document.createElement('a');
             audioLink.href = audioUrl;
-            audioLink.download = dualData.audio.filename;
+            audioLink.download = audioFile.filename;
             document.body.appendChild(audioLink);
             audioLink.click();
             document.body.removeChild(audioLink);
@@ -342,7 +341,7 @@ export default function YoutubeDownloader() {
         setDownloadProgress(100);
         setDownloadComplete(true);
         setIsDownloading(false);
-        setProgressText("Ambas descargas completadas");
+        setProgressText("Ambas descargas completadas (MP4 + MP3)");
         
       } else {
         // Single file download
