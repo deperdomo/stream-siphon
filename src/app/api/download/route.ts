@@ -45,6 +45,58 @@ async function getVideoInfo(youtubeUrl: string, retries = 3): Promise<any> {
   }
 }
 
+// Function to merge video and audio using FFmpeg
+async function mergeVideoAndAudio(
+  videoPath: string,
+  audioPath: string,
+  outputPath: string,
+  onProgress?: (progress: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    console.log('[mergeVideoAndAudio] Starting merge', {
+      videoPath,
+      audioPath,
+      outputPath,
+    });
+
+    const command = ffmpeg()
+      .input(videoPath)
+      .input(audioPath)
+      .outputOptions([
+        '-c:v copy',        // Copy video codec (no re-encoding)
+        '-c:a aac',         // Use AAC for audio
+        '-b:a 192k',        // Audio bitrate
+        '-shortest',        // Finish encoding when the shortest stream ends
+        '-movflags', '+faststart' // Enable fast start for better streaming
+      ])
+      .output(outputPath);
+
+    command.on('start', (commandLine) => {
+      console.log('[mergeVideoAndAudio] FFmpeg command:', commandLine);
+    });
+
+    command.on('progress', (progress) => {
+      if (onProgress && progress.percent) {
+        console.log(`[mergeVideoAndAudio] Progress: ${progress.percent.toFixed(1)}%`);
+        onProgress(progress.percent);
+      }
+    });
+
+    command.on('end', () => {
+      console.log('[mergeVideoAndAudio] Merge completed successfully');
+      resolve();
+    });
+
+    command.on('error', (err, stdout, stderr) => {
+      console.error('[mergeVideoAndAudio] FFmpeg error:', err.message);
+      console.error('[mergeVideoAndAudio] FFmpeg stderr:', stderr);
+      reject(new Error(`Failed to merge video and audio: ${err.message}`));
+    });
+
+    command.run();
+  });
+}
+
 // Function to download video with yt-dlp
 async function downloadWithYtDlp(
   youtubeUrl: string,
@@ -61,16 +113,17 @@ async function downloadWithYtDlp(
     let preferredExtensions: string[];
     
     if (format === 'video') {
-      // Prefer combined formats (video+audio) over separate streams
+      // Download ONLY video stream without audio for maximum quality
+      // This allows access to highest resolutions (1080p60, 4K, 8K, etc.)
       if (quality === 'best') {
-        // Try combined formats first, prioritizing more compatible codecs
-        formatSelector = 'best[ext=mp4][vcodec!=none][acodec!=none]/best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best';
+        // Prioritize video-only formats with highest resolution
+        // Use format sorting to ensure we get the best quality
+        formatSelector = 'bv*[height>=1080]/bv*[height>=720]/bv*[height>=480]/bv*/bestvideo';
       } else {
         const height = quality.replace('p', '');
-        // Try combined format at specific height first
-        formatSelector = `best[ext=mp4][height<=${height}][vcodec!=none][acodec!=none]/bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}]`;
+        formatSelector = `bv*[height<=${height}]/bestvideo[height<=${height}]/bv*[height<=${height}]/bestvideo[height<=${height}]`;
       }
-      preferredExtensions = ['.mp4', '.mkv', '.webm', '.m4v'];
+      preferredExtensions = ['.mp4', '.webm', '.mkv', '.m4v'];
     } else {
       // Download best audio and convert to MP3
       formatSelector = 'bestaudio[ext=m4a]/bestaudio/best';
@@ -85,6 +138,10 @@ async function downloadWithYtDlp(
       '--format', formatSelector,
       '--output', outputTemplate,
       '--no-playlist',
+      // Add verbose logging to see which format is selected
+      '--print-to-file', 'Selected format: %(format_id)s - %(format)s - %(resolution)s - %(vcodec)s/%(acodec)s', join(outputPath, 'format-debug.txt'),
+      // Force quality sorting - prioritize resolution, fps, and codec quality
+      '--format-sort', 'res:1080,fps,vcodec:h264,acodec',
       // Add headers and user agent to avoid 403 errors
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       '--referer', 'https://www.youtube.com/',
@@ -103,8 +160,11 @@ async function downloadWithYtDlp(
       // Add retry options
       '--retries', '5',
       '--fragment-retries', '5',
-      // Try to use different extractors
-      '--extractor-args', 'youtube:player_client=android'
+      // Use android_vr client which typically has better format access
+      // Fallback to android and web if needed
+      '--extractor-args', 'youtube:player_client=android_vr,android',
+      // Skip unavailable fragments instead of failing
+      '--skip-unavailable-fragments'
     ];
 
     // Add format-specific options
@@ -153,9 +213,20 @@ async function downloadWithYtDlp(
       throw error;
     }
     
+    // Read debug info about selected format
+    const debugFilePath = join(outputPath, 'format-debug.txt');
+    if (existsSync(debugFilePath)) {
+      try {
+        const formatDebugInfo = readFileSync(debugFilePath, 'utf-8');
+        console.log(`🔍 Format selected by yt-dlp: ${formatDebugInfo.trim()}`);
+      } catch (err) {
+        console.log('Could not read format debug file:', err);
+      }
+    }
+    
     // Find the downloaded file - look for the expected extension
     const directoryFiles = readdirSync(outputPath)
-      .filter((fileName) => fileName.includes(sanitizedTitle) && !fileName.endsWith('.part'));
+      .filter((fileName) => fileName.includes(sanitizedTitle) && !fileName.endsWith('.part') && !fileName.endsWith('.txt'));
 
     console.log(`📂 Files found in download directory:`, directoryFiles);
 
@@ -224,6 +295,13 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { youtubeUrl, downloadType = 'single' } = body;
+
+    console.log('[Download API] Incoming POST', {
+      sessionId,
+      body,
+      format: body.format,
+      quality: body.quality,
+    });
 
     if (!youtubeUrl) {
       await sendError(sessionId, 'URL de YouTube es requerida');
@@ -310,6 +388,14 @@ async function handleSingleDownload(
   quality: string
 ) {
   try {
+    console.log('[handleSingleDownload] Called with', {
+      sessionId,
+      format,
+      quality,
+      formatType: typeof format,
+      formatValue: JSON.stringify(format),
+    });
+
     const videoTitle = videoInfo.title || 'video';
     const tempDir = tmpdir();
     const downloadDir = join(tempDir, `download-${randomUUID()}`);
@@ -324,28 +410,85 @@ async function handleSingleDownload(
     let contentType: string;
     const safeTitle = `${videoTitle.replace(/[<>:"/\\|?*]/g, '_')}`;
 
-    if (format === 'video') {
-      // Download video directly - yt-dlp produces perfect files
-      downloadResult = await downloadWithYtDlp(
+    // Determine if this is audio or video based on the format string
+    // Audio formats end with 'kbps', video formats are resolutions or 'best'
+    const isAudioFormat = format && format.toLowerCase().includes('kbps');
+    const actualQuality = quality || format || 'best';
+    
+    console.log('[handleSingleDownload] Format detection', {
+      format,
+      quality,
+      isAudioFormat,
+      actualQuality,
+      willDownloadVideo: !isAudioFormat,
+    });
+
+    if (!isAudioFormat) {
+      // This is a VIDEO download
+      // For video: download video and audio separately, then merge for maximum quality
+      await sendProgressUpdate(sessionId, 30, 'Descargando video en máxima calidad...');
+      
+      const videoResult = await downloadWithYtDlp(
         youtubeUrl,
         downloadDir,
         'video',
-        quality,
+        actualQuality,
         (progress) => {
-          const adjustedProgress = 30 + (progress * 0.65); // 30% to 95%
+          const adjustedProgress = 30 + (progress * 0.3); // 30% to 60%
           sendProgressUpdate(sessionId, adjustedProgress, `Descargando video: ${progress.toFixed(1)}%`);
         }
       );
-      const detectedExtension = downloadResult.extension || 'mp4';
-      finalFilename = `${safeTitle}.${detectedExtension}`;
-      contentType = getContentType(detectedExtension, 'video');
+
+      await sendProgressUpdate(sessionId, 60, 'Descargando audio en máxima calidad...');
+      
+      const audioResult = await downloadWithYtDlp(
+        youtubeUrl,
+        downloadDir,
+        'audio',
+        'best', // Always get best audio quality
+        (progress) => {
+          const adjustedProgress = 60 + (progress * 0.15); // 60% to 75%
+          sendProgressUpdate(sessionId, adjustedProgress, `Descargando audio: ${progress.toFixed(1)}%`);
+        }
+      );
+
+      await sendProgressUpdate(sessionId, 75, 'Combinando video y audio para máxima calidad...');
+
+      // Merge video and audio
+      const outputExtension = 'mp4'; // Use MP4 for better compatibility
+      const mergedFilePath = join(downloadDir, `merged-${randomUUID()}.${outputExtension}`);
+      
+      await mergeVideoAndAudio(
+        videoResult.filePath,
+        audioResult.filePath,
+        mergedFilePath,
+        (progress) => {
+          const adjustedProgress = 75 + (progress * 0.2); // 75% to 95%
+          sendProgressUpdate(sessionId, adjustedProgress, `Combinando: ${progress.toFixed(1)}%`);
+        }
+      );
+
+      downloadResult = {
+        filePath: mergedFilePath,
+        extension: outputExtension,
+        filename: `${safeTitle}.${outputExtension}`
+      };
+      
+      finalFilename = `${safeTitle}.${outputExtension}`;
+      contentType = getContentType(outputExtension, 'video');
+      
+      console.log('[handleSingleDownload] Video merged successfully', {
+        videoFile: videoResult.filePath,
+        audioFile: audioResult.filePath,
+        mergedFile: mergedFilePath,
+      });
     } else {
-      // Download audio - yt-dlp will automatically convert to MP3
+      // This is an AUDIO download
       downloadResult = await downloadWithYtDlp(
         youtubeUrl,
         downloadDir,
         'audio',
-        quality,
+        actualQuality,
         (progress) => {
           const adjustedProgress = 30 + (progress * 0.65); // 30% to 95%
           sendProgressUpdate(sessionId, adjustedProgress, `Descargando y convirtiendo audio: ${progress.toFixed(1)}%`);

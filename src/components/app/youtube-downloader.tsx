@@ -47,8 +47,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { performYoutubeAnalysis, downloadYoutubeVideo } from "@/lib/actions";
-import type { AnalyzeYoutubeUrlOutput, DownloadYoutubeVideoOutput } from "@/lib/types";
+import { performYoutubeAnalysis } from "@/lib/actions";
+import type { AnalyzeYoutubeUrlOutput } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -89,8 +89,17 @@ export default function YoutubeDownloader() {
     try {
       const result = await performYoutubeAnalysis(data);
       setAnalysisResult(result);
+      console.log('[YoutubeDownloader] Analysis result received', {
+        url: data.youtubeUrl,
+        totalFormats: result.formats.length,
+        formats: result.formats,
+      });
       const videoFormats = result.formats.filter(f => !f.endsWith('kbps'));
       const audioFormats = result.formats.filter(f => f.endsWith('kbps'));
+      console.log('[YoutubeDownloader] Parsed format buckets', {
+        videoFormats,
+        audioFormats,
+      });
       
       if (videoFormats.length > 0) {
         setSelectedFormatType('video');
@@ -110,6 +119,7 @@ export default function YoutubeDownloader() {
             : "An unknown error occurred.",
         action: <XCircle className="text-destructive-foreground" />,
       });
+      console.error('[YoutubeDownloader] Analysis failed', error);
     } finally {
       setIsAnalyzing(false);
     }
@@ -130,14 +140,99 @@ export default function YoutubeDownloader() {
     setProgressText("Iniciando descarga...");
 
     try {
+      const decodeFilenameValue = (value: string) => {
+        const normalized = value.replace(/\+/g, ' ');
+        try {
+          return decodeURIComponent(normalized);
+        } catch (err) {
+          console.warn('[YoutubeDownloader] Failed to decode filename component', {
+            value,
+            normalized,
+            error: err,
+          });
+          return normalized.replace(/%([0-9A-F]{2})/gi, (_, hex) => {
+            const charCode = parseInt(hex, 16);
+            return Number.isNaN(charCode) ? `%${hex}` : String.fromCharCode(charCode);
+          });
+        }
+      };
+
+      const extractFilename = (response: Response): string | null => {
+        const contentDisposition = response.headers.get('Content-Disposition');
+        if (!contentDisposition) {
+          return null;
+        }
+
+        const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+        if (utf8Match && utf8Match[1]) {
+          return decodeFilenameValue(utf8Match[1]);
+        }
+
+        const asciiMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+        return asciiMatch?.[1] ? decodeFilenameValue(asciiMatch[1]) : null;
+      };
+
+      const resolveFileName = (
+        response: Response,
+        fallbackBase: string,
+        mediaKind: 'video' | 'audio'
+      ) => {
+        const decodedBase = decodeFilenameValue(fallbackBase)
+          .replace(/\s+/g, ' ')
+          .trim();
+        const sanitizedBase = decodedBase.replace(/[^a-zA-Z0-9\s_-]/g, '').trim() || `${mediaKind}-download`;
+        const inferredFromHeader = extractFilename(response);
+        if (inferredFromHeader) {
+          const decodedHeader = decodeFilenameValue(inferredFromHeader).replace(/[\r\n]/g, '').trim();
+          const headerBase = decodedHeader.replace(/[^a-zA-Z0-9\s._-]/g, '').trim();
+          const finalHeader = headerBase.length > 0 ? headerBase : sanitizedBase;
+          console.log('[YoutubeDownloader] Using filename from response header', finalHeader);
+          return finalHeader;
+        }
+
+        const contentType = response.headers.get('Content-Type') || '';
+        let extension = mediaKind === 'audio' ? 'mp3' : 'mp4';
+
+        if (contentType.includes('matroska')) {
+          extension = 'mkv';
+        } else if (contentType.includes('webm')) {
+          extension = 'webm';
+        } else if (contentType.includes('ogg')) {
+          extension = 'ogg';
+        } else if (contentType.includes('mpeg')) {
+          extension = 'mp3';
+        } else if (contentType.includes('mp4')) {
+          extension = 'mp4';
+        }
+
+        if (mediaKind === 'audio' && selectedQuality.includes('kbps')) {
+          extension = 'mp3';
+        }
+
+        const computedName = `${sanitizedBase.substring(0, 80)}.${extension}`;
+        console.log('[YoutubeDownloader] Falling back to computed filename', {
+          computedName,
+          contentType,
+          mediaKind,
+        });
+        return computedName;
+      };
+
       // Create a unique session ID for this download
       const sessionId = Math.random().toString(36).substring(7);
+      console.log('[YoutubeDownloader] Starting download', {
+        sessionId,
+        url: form.getValues('youtubeUrl'),
+        selectedFormatType,
+        selectedQuality,
+      });
       
       // Set up Server-Sent Events to receive progress updates
       const eventSource = new EventSource(`/api/download/progress?sessionId=${sessionId}`);
       
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
+        console.log('[YoutubeDownloader] Progress event received', { sessionId, data });
         if (data.type === 'progress') {
           setDownloadProgress(data.progress);
           setProgressText(data.message);
@@ -173,6 +268,10 @@ export default function YoutubeDownloader() {
 
       if (!downloadResponse.ok) {
         eventSource.close();
+        console.error('[YoutubeDownloader] Download response returned error status', {
+          status: downloadResponse.status,
+          statusText: downloadResponse.statusText,
+        });
         throw new Error('Download failed');
       }
 
@@ -248,10 +347,16 @@ export default function YoutubeDownloader() {
       } else {
         // Single file download
         const blob = await downloadResponse.blob();
+        console.log('[YoutubeDownloader] Single download completed. Blob size:', blob.size);
+        const resolvedName = resolveFileName(
+          downloadResponse,
+          analysisResult.title,
+          selectedQuality.includes('kbps') ? 'audio' : 'video'
+        );
         const url = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = `${analysisResult.title.replace(/[^a-zA-Z0-9\s]/g, '').substring(0, 50)}.${selectedQuality.includes('kbps') ? 'webm' : 'mp4'}`;
+        link.download = resolvedName;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -268,6 +373,7 @@ export default function YoutubeDownloader() {
       setIsDownloading(false);
       setDownloadProgress(0);
       setProgressText("");
+      console.error('[YoutubeDownloader] Download failed', error);
       toast({
         variant: "destructive",
         title: "Download Failed",
@@ -476,7 +582,7 @@ export default function YoutubeDownloader() {
                   <SelectContent>
                     {videoFormats.map((format) => (
                       <SelectItem key={format} value={format} className="text-base">
-                        {format}
+                        {format === 'best' ? 'Mejor disponible' : format}
                       </SelectItem>
                     ))}
                   </SelectContent>

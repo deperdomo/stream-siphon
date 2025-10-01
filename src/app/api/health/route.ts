@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import YTDlpWrap from 'yt-dlp-wrap';
 import { join } from 'path';
 
 // Health check endpoint to test YouTube connectivity
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
     const testUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'; // Rick Roll test video
     
