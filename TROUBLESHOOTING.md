@@ -476,4 +476,55 @@ git push origin main
 
 ---
 
+## 🔴 Error: youtube-dl-exec postinstall fails
+
+### Síntomas
+```
+npm error path /app/node_modules/youtube-dl-exec
+npm error command failed
+npm error Error: Cannot find module 'debug'
+npm error Require stack:
+npm error - /app/node_modules/debug-logfmt/src/index.js
+npm error - /app/node_modules/youtube-dl-exec/scripts/postinstall.js
+```
+
+### Causa
+- El paquete `youtube-dl-exec` ejecuta un script postinstall
+- El script necesita el paquete `debug` que es una devDependency
+- Al usar `--omit=dev`, las devDependencies no se instalan
+- El script postinstall falla porque falta `debug`
+
+### Soluciones
+
+#### Solución 1: NO omitir devDependencies (Recomendado)
+
+Dockerfile correcto:
+```dockerfile
+# Instalar TODAS las dependencias (necesarias para build y scripts)
+RUN npm ci || npm install
+```
+
+**NO usar:**
+```dockerfile
+# ❌ MALO - Causa error en postinstall
+RUN npm ci --omit=dev
+RUN npm ci --only=production
+```
+
+**Razón:** 
+- Next.js necesita devDependencies para construir
+- Los scripts postinstall pueden necesitar devDependencies
+- Después del build, Node solo carga lo que está en `dependencies` de todas formas
+
+#### Solución 2: Ignorar scripts postinstall (No recomendado)
+
+Si realmente necesitas omitir devDependencies:
+```dockerfile
+RUN npm ci --omit=dev --ignore-scripts
+```
+
+**Advertencia:** Esto puede causar que algunos paquetes no se configuren correctamente.
+
+---
+
 **¿Problemas persistentes?** Considera usar un VPS (DigitalOcean, Hetzner) para tener control total.
