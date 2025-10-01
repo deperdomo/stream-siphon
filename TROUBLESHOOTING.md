@@ -527,4 +527,60 @@ RUN npm ci --omit=dev --ignore-scripts
 
 ---
 
+## 🔴 Error: Failed to extract any player response (YouTube Bot Detection)
+
+### Síntomas
+```
+ERROR: [youtube] Failed to extract any player response
+WARNING: [youtube] unable to extract yt initial data
+Failed to parse JSON
+```
+
+### Causa
+YouTube detecta requests automatizados desde servidores y bloquea las descargas.
+
+### Soluciones
+
+#### Solución 1: Actualizar yt-dlp a la última versión ✅
+
+Dockerfile:
+```dockerfile
+RUN apk add --no-cache \
+    ffmpeg \
+    python3 \
+    py3-pip \
+    ca-certificates \
+    && pip3 install --break-system-packages --no-cache-dir -U yt-dlp \
+    && yt-dlp --version
+```
+
+#### Solución 2: Usar player clients alternativos ✅
+
+En tu código de descarga, agregar:
+```typescript
+'--extractor-args', 'youtube:player_client=ios,android,mweb,web;player_skip=webpage,configs;lang=es'
+```
+
+Esto hace que yt-dlp use la API de iOS/Android en lugar de la web.
+
+#### Solución 3: Headers mejorados ✅
+
+```typescript
+'--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+'--referer', 'https://www.youtube.com/',
+'--add-header', 'sec-ch-ua:"Google Chrome";v="131", "Chromium";v="131"'
+```
+
+#### Solución 4: Si nada funciona, usar cookies (Avanzado)
+
+1. Instalar extensión "Get cookies.txt LOCALLY" en Chrome
+2. Ve a YouTube y loguéate
+3. Exporta cookies a `youtube_cookies.txt`
+4. Sube el archivo a Railway (Variables de entorno o volumen)
+5. Usa: `'--cookies', '/path/to/youtube_cookies.txt'`
+
+**Nota:** Las cookies expiran, necesitarás actualizarlas periódicamente.
+
+---
+
 **¿Problemas persistentes?** Considera usar un VPS (DigitalOcean, Hetzner) para tener control total.

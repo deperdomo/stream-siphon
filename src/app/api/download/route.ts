@@ -146,27 +146,30 @@ async function downloadWithYtDlp(
       '--print-to-file', 'Selected format: %(format_id)s - %(format)s - %(resolution)s - %(vcodec)s/%(acodec)s', join(outputPath, 'format-debug.txt'),
       // Force quality sorting - prioritize resolution, fps, codec quality, and Spanish language
       '--format-sort', 'res:1080,fps,vcodec:h264,acodec,lang:es',
-      // Add headers and user agent to avoid 403 errors
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      // Enhanced headers to bypass YouTube bot detection
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       '--referer', 'https://www.youtube.com/',
-      '--add-header', 'Accept-Language:en-US,en;q=0.9',
+      '--add-header', 'Accept-Language:es-ES,es;q=0.9,en;q=0.8',
       '--add-header', 'Accept-Encoding:gzip, deflate, br',
-      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
       '--add-header', 'Connection:keep-alive',
       '--add-header', 'Upgrade-Insecure-Requests:1',
       '--add-header', 'Sec-Fetch-Dest:document',
       '--add-header', 'Sec-Fetch-Mode:navigate',
       '--add-header', 'Sec-Fetch-Site:none',
+      '--add-header', 'Sec-Fetch-User:?1',
+      '--add-header', 'sec-ch-ua:"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+      '--add-header', 'sec-ch-ua-mobile:?0',
+      '--add-header', 'sec-ch-ua-platform:"Windows"',
       // Network options to avoid rate limiting
       '--sleep-interval', '1',
       '--max-sleep-interval', '3',
       '--socket-timeout', '30',
       // Add retry options
-      '--retries', '5',
-      '--fragment-retries', '5',
-      // Use android_vr client for better format access and set language preference
-      // Prioritize Spanish (es), Latin American Spanish (es-419), then undefined (original)
-      '--extractor-args', 'youtube:player_client=android_vr,android;lang=es,es-419,und',
+      '--retries', '10',
+      '--fragment-retries', '10',
+      // Use multiple player clients as fallback and skip webpage parsing
+      '--extractor-args', 'youtube:player_client=ios,android,mweb,web;player_skip=webpage,configs;lang=es,es-419,und',
       // Skip unavailable fragments instead of failing
       '--skip-unavailable-fragments'
     ];

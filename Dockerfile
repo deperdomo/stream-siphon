@@ -1,13 +1,15 @@
 # Usar Node.js 20 con Alpine para imagen más ligera
 FROM node:20-alpine
 
-# Instalar dependencias del sistema: FFmpeg y yt-dlp
+# Instalar dependencias del sistema: FFmpeg, yt-dlp y certificados SSL
 # Nota: Usamos --break-system-packages porque Alpine 3.22+ tiene PEP 668 habilitado
 RUN apk add --no-cache \
     ffmpeg \
     python3 \
     py3-pip \
-    && pip3 install --break-system-packages --no-cache-dir yt-dlp
+    ca-certificates \
+    && pip3 install --break-system-packages --no-cache-dir -U yt-dlp \
+    && yt-dlp --version
 
 # Configurar directorio de trabajo
 WORKDIR /app
