@@ -260,7 +260,7 @@ export default function YoutubeDownloader() {
           <div role="radiogroup" aria-label="Formato" className="relative grid grid-cols-3 rounded-full bg-muted p-1">
             <div
               aria-hidden
-              className="segment-thumb absolute inset-y-1 left-1 w-[calc((100%-0.5rem)/3)] rounded-full bg-card shadow-sm transition-transform duration-300 ease-[var(--ease-out)] dark:bg-secondary-foreground/20"
+              className="segment-thumb absolute inset-y-1 left-1 w-[calc((100%-0.5rem)/3)] rounded-full bg-card shadow-sm dark:bg-secondary-foreground/20"
               style={{ transform: `translateX(${kindIndex * 100}%)` }}
             />
             {KINDS.map(({ value, label, icon: Icon }) => (

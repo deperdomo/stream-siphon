@@ -96,6 +96,11 @@
     }
   }
 
+  /* Indicador del control segmentado */
+  .segment-thumb {
+    transition: transform 300ms var(--ease-out);
+  }
+
   /* Respuesta al pulsar, instantánea */
   .pressable {
     transition: transform 100ms ease-out, background-color 150ms ease-out, opacity 150ms ease-out;
