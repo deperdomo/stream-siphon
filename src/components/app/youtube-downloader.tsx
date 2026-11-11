@@ -1,44 +1,21 @@
 "use client";
 
 import * as React from "react";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
-import Image from "next/image";
 import {
+  ArrowRight,
+  Check,
+  ClipboardPaste,
   Download,
   Film,
   Loader2,
   Music,
-  Search,
-  CheckCircle,
-  XCircle,
-  Youtube,
-  Info,
-  Clipboard,
-  Trash2,
   Package2,
+  X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormMessage,
-} from "@/components/ui/form";
 import { Progress } from "@/components/ui/progress";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -48,620 +25,324 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { performYoutubeAnalysis } from "@/lib/actions";
-import type { AnalyzeYoutubeUrlOutput } from "@/lib/types";
-import { Skeleton } from "@/components/ui/skeleton";
+import type { DownloadRequest, VideoAnalysis } from "@/lib/types";
+import { cn, isYoutubeUrl } from "@/lib/utils";
 import { ThemeToggle } from "./theme-toggle";
 
-const formSchema = z.object({
-  youtubeUrl: z.string().url("Invalid URL. Please verify it's a YouTube link."),
-});
+type Kind = DownloadRequest["kind"];
 
-type FormValues = z.infer<typeof formSchema>;
+const KINDS: { value: Kind; label: string; icon: React.ElementType }[] = [
+  { value: "video", label: "Video", icon: Film },
+  { value: "audio", label: "Audio", icon: Music },
+  { value: "dual", label: "Ambos", icon: Package2 },
+];
+const BITRATES = ["192", "128", "96"];
+const BEST = "best";
 
 export default function YoutubeDownloader() {
-  const [analysisResult, setAnalysisResult] =
-    React.useState<AnalyzeYoutubeUrlOutput | null>(null);
+  const [url, setUrl] = React.useState("");
+  const [urlError, setUrlError] = React.useState("");
+  const [analysis, setAnalysis] = React.useState<VideoAnalysis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = React.useState(false);
-  const [downloadProgress, setDownloadProgress] = React.useState(0);
-  const [isDownloading, setIsDownloading] = React.useState(false);
-  const [downloadComplete, setDownloadComplete] = React.useState(false);
-  const [selectedFormatType, setSelectedFormatType] = React.useState<"video" | "audio" | "dual">("video");
-  const [selectedQuality, setSelectedQuality] = React.useState<string>("");
-  const [progressText, setProgressText] = React.useState<string>("");
+  const [kind, setKind] = React.useState<Kind>("video");
+  const [height, setHeight] = React.useState(BEST);
+  const [kbps, setKbps] = React.useState(BITRATES[0]);
+  // null = sin descarga en curso; done = archivos entregados al navegador
+  const [download, setDownload] = React.useState<{ progress: number; message: string; done?: boolean } | null>(null);
 
   const { toast } = useToast();
+  const isDownloading = !!download && !download.done;
+  const busy = isAnalyzing || isDownloading;
 
-  const formRef = React.useRef<HTMLFormElement>(null);
+  const fail = (title: string, description: string) =>
+    toast({ variant: "destructive", title, description });
 
-  const form = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
-    defaultValues: {
-      youtubeUrl: "",
-    },
-  });
-
-  // Reset download state when switching between tabs (Video/Audio/Ambos)
-  React.useEffect(() => {
-    if (downloadComplete) {
-      setDownloadComplete(false);
-      setDownloadProgress(0);
-      setProgressText("");
+  const analyze = async (value: string) => {
+    value = value.trim();
+    if (!isYoutubeUrl(value)) {
+      setUrlError("Introduce un enlace de YouTube válido.");
+      return;
     }
-  }, [selectedFormatType]);
-
-  const onSubmit = async (data: FormValues) => {
+    setUrlError("");
     setIsAnalyzing(true);
-    setAnalysisResult(null);
-    setDownloadComplete(false);
-    setDownloadProgress(0);
-
+    setAnalysis(null);
+    setDownload(null);
     try {
-      const result = await performYoutubeAnalysis(data);
-      setAnalysisResult(result);
-      console.log('[YoutubeDownloader] Analysis result received', {
-        url: data.youtubeUrl,
-        totalFormats: result.formats.length,
-        formats: result.formats,
-      });
-      const videoFormats = result.formats.filter(f => !f.endsWith('kbps'));
-      const audioFormats = result.formats.filter(f => f.endsWith('kbps'));
-      console.log('[YoutubeDownloader] Parsed format buckets', {
-        videoFormats,
-        audioFormats,
-      });
-      
-      if (videoFormats.length > 0) {
-        setSelectedFormatType('video');
-        setSelectedQuality(videoFormats[0]);
-      } else if (audioFormats.length > 0) {
-        setSelectedFormatType('audio');
-        setSelectedQuality(audioFormats[0]);
-      }
-
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "Analysis Failed",
-        description:
-          error instanceof Error
-            ? error.message
-            : "An unknown error occurred.",
-        action: <XCircle className="text-destructive-foreground" />,
-      });
-      console.error('[YoutubeDownloader] Analysis failed', error);
+      const result = await performYoutubeAnalysis(value);
+      if ("error" in result) return fail("No se pudo analizar el video", result.error);
+      setAnalysis(result);
+      setKind("video");
+      setHeight(BEST);
+    } catch {
+      fail("No se pudo analizar el video", "Error de conexión con el servidor.");
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  const handleDownload = async () => {
-    if (!analysisResult || !selectedQuality) {
-      toast({
-        variant: "destructive",
-        title: "No Quality Selected",
-        description: "Please select a quality before downloading."
-      });
-      return;
-    }
-    setIsDownloading(true);
-    setDownloadProgress(0);
-    setDownloadComplete(false);
-    setProgressText("Iniciando descarga...");
+  const setAndAnalyze = (text: string) => {
+    setUrl(text);
+    if (isYoutubeUrl(text.trim())) analyze(text);
+  };
 
+  const pasteFromClipboard = async () => {
     try {
-      const decodeFilenameValue = (value: string) => {
-        const normalized = value.replace(/\+/g, ' ');
-        try {
-          return decodeURIComponent(normalized);
-        } catch (err) {
-          console.warn('[YoutubeDownloader] Failed to decode filename component', {
-            value,
-            normalized,
-            error: err,
-          });
-          return normalized.replace(/%([0-9A-F]{2})/gi, (_, hex) => {
-            const charCode = parseInt(hex, 16);
-            return Number.isNaN(charCode) ? `%${hex}` : String.fromCharCode(charCode);
-          });
-        }
+      setAndAnalyze(await navigator.clipboard.readText());
+    } catch {
+      fail("Sin acceso al portapapeles", "Pega el enlace manualmente con Ctrl/Cmd + V.");
+    }
+  };
+
+  const reset = () => {
+    setUrl("");
+    setUrlError("");
+    setAnalysis(null);
+    setDownload(null);
+  };
+
+  const handleDownload = async () => {
+    setDownload({ progress: 0, message: "Iniciando…" });
+    try {
+      const body: DownloadRequest = {
+        youtubeUrl: url.trim(),
+        kind,
+        height: height === BEST ? undefined : Number(height),
+        kbps: Number(kbps),
       };
-
-      const extractFilename = (response: Response): string | null => {
-        const contentDisposition = response.headers.get('Content-Disposition');
-        if (!contentDisposition) {
-          return null;
-        }
-
-        const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-        if (utf8Match && utf8Match[1]) {
-          return decodeFilenameValue(utf8Match[1]);
-        }
-
-        const asciiMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
-        return asciiMatch?.[1] ? decodeFilenameValue(asciiMatch[1]) : null;
-      };
-
-      const resolveFileName = (
-        response: Response,
-        fallbackBase: string,
-        mediaKind: 'video' | 'audio'
-      ) => {
-        const decodedBase = decodeFilenameValue(fallbackBase)
-          .replace(/\s+/g, ' ')
-          .trim();
-        const sanitizedBase = decodedBase.replace(/[^a-zA-Z0-9\s_-]/g, '').trim() || `${mediaKind}-download`;
-        const inferredFromHeader = extractFilename(response);
-        if (inferredFromHeader) {
-          const decodedHeader = decodeFilenameValue(inferredFromHeader).replace(/[\r\n]/g, '').trim();
-          const headerBase = decodedHeader.replace(/[^a-zA-Z0-9\s._-]/g, '').trim();
-          const finalHeader = headerBase.length > 0 ? headerBase : sanitizedBase;
-          console.log('[YoutubeDownloader] Using filename from response header', finalHeader);
-          return finalHeader;
-        }
-
-        const contentType = response.headers.get('Content-Type') || '';
-        let extension = mediaKind === 'audio' ? 'mp3' : 'mp4';
-
-        if (contentType.includes('matroska')) {
-          extension = 'mkv';
-        } else if (contentType.includes('webm')) {
-          extension = 'webm';
-        } else if (contentType.includes('ogg')) {
-          extension = 'ogg';
-        } else if (contentType.includes('mpeg')) {
-          extension = 'mp3';
-        } else if (contentType.includes('mp4')) {
-          extension = 'mp4';
-        }
-
-        if (mediaKind === 'audio' && selectedQuality.includes('kbps')) {
-          extension = 'mp3';
-        }
-
-        const computedName = `${sanitizedBase.substring(0, 80)}.${extension}`;
-        console.log('[YoutubeDownloader] Falling back to computed filename', {
-          computedName,
-          contentType,
-          mediaKind,
-        });
-        return computedName;
-      };
-
-      // Create a unique session ID for this download
-      const sessionId = Math.random().toString(36).substring(7);
-      console.log('[YoutubeDownloader] Starting download', {
-        sessionId,
-        url: form.getValues('youtubeUrl'),
-        selectedFormatType,
-        selectedQuality,
+      const response = await fetch("/api/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
-      
-      // Set up Server-Sent Events to receive progress updates
-      const eventSource = new EventSource(`/api/download/progress?sessionId=${sessionId}`);
-      
-      eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        console.log('[YoutubeDownloader] Progress event received', { sessionId, data });
-        if (data.type === 'progress') {
-          setDownloadProgress(data.progress);
-          setProgressText(data.message);
-        } else if (data.type === 'complete') {
-          eventSource.close();
-          setDownloadProgress(100);
-          setDownloadComplete(true);
-          setIsDownloading(false);
-          setProgressText("Descarga completada");
-        } else if (data.type === 'error') {
-          eventSource.close();
-          throw new Error(data.message);
-        }
-      };
-
-      eventSource.onerror = () => {
-        eventSource.close();
-        throw new Error('Connection lost during download');
-      };
-
-      // Start the download with the session ID
-      const downloadResponse = await fetch(`/api/download?sessionId=${sessionId}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          youtubeUrl: form.getValues("youtubeUrl"),
-          format: selectedQuality,
-          downloadType: selectedFormatType === 'dual' ? 'dual' : 'single'
-        }),
-      });
-
-      if (!downloadResponse.ok) {
-        eventSource.close();
-        console.error('[YoutubeDownloader] Download response returned error status', {
-          status: downloadResponse.status,
-          statusText: downloadResponse.statusText,
-        });
-        throw new Error('Download failed');
+      if (!response.ok || !response.body) {
+        throw new Error((await response.json().catch(() => null))?.error ?? "El servidor rechazó la descarga.");
       }
 
-      // Handle download based on response type
-      if (selectedFormatType === 'dual') {
-        // For dual downloads, get both video and audio files
-        const dualData = await downloadResponse.json();
-        eventSource.close();
-        
-        if (!dualData.success || !dualData.files) {
-          throw new Error(dualData.error || 'Failed to prepare dual download');
+      // El servidor emite una línea JSON por evento: progreso… y al final los archivos o un error
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = "";
+      let files: { id: string; filename: string }[] | undefined;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line) continue;
+          const event = JSON.parse(line);
+          if (event.error) throw new Error(event.error);
+          if (event.files) files = event.files;
+          else setDownload({ progress: event.progress, message: event.message });
         }
-        
-        // Get video and audio files from the response
-        const videoFile = dualData.files.find((f: any) => f.type === 'video');
-        const audioFile = dualData.files.find((f: any) => f.type === 'audio');
-        
-        if (!videoFile || !audioFile) {
-          throw new Error('Missing video or audio file information');
-        }
-        
-        setProgressText("Descargando video completo (MP4)...");
-        setDownloadProgress(96);
-        
-        // Download video file (MP4 with video + audio)
-        const videoResponse = await fetch(`/api/download?tempPath=${encodeURIComponent(videoFile.tempPath)}&filename=${encodeURIComponent(videoFile.filename)}&contentType=${encodeURIComponent(videoFile.contentType)}`);
-        
-        if (videoResponse.ok) {
-          const videoBlob = await videoResponse.blob();
-          const videoUrl = window.URL.createObjectURL(videoBlob);
-          const videoLink = document.createElement('a');
-          videoLink.href = videoUrl;
-          videoLink.download = videoFile.filename;
-          document.body.appendChild(videoLink);
-          videoLink.click();
-          document.body.removeChild(videoLink);
-          window.URL.revokeObjectURL(videoUrl);
-          
-          setProgressText("Descargando audio (MP3)...");
-          setDownloadProgress(98);
-          
-          // Download audio file (MP3)
-          const audioResponse = await fetch(`/api/download?tempPath=${encodeURIComponent(audioFile.tempPath)}&filename=${encodeURIComponent(audioFile.filename)}&contentType=${encodeURIComponent(audioFile.contentType)}`);
-          
-          if (audioResponse.ok) {
-            const audioBlob = await audioResponse.blob();
-            const audioUrl = window.URL.createObjectURL(audioBlob);
-            const audioLink = document.createElement('a');
-            audioLink.href = audioUrl;
-            audioLink.download = audioFile.filename;
-            document.body.appendChild(audioLink);
-            audioLink.click();
-            document.body.removeChild(audioLink);
-            window.URL.revokeObjectURL(audioUrl);
-          }
-        }
-        
-        setDownloadProgress(100);
-        setDownloadComplete(true);
-        setIsDownloading(false);
-        setProgressText("Ambas descargas completadas (MP4 + MP3)");
-        
-      } else {
-        // Single file download
-        const blob = await downloadResponse.blob();
-        console.log('[YoutubeDownloader] Single download completed. Blob size:', blob.size);
-        const resolvedName = resolveFileName(
-          downloadResponse,
-          analysisResult.title,
-          selectedQuality.includes('kbps') ? 'audio' : 'video'
-        );
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = resolvedName;
+      }
+      if (!files) throw new Error("La conexión se cortó antes de terminar. Inténtalo de nuevo.");
+
+      // El navegador descarga cada archivo directamente (sin cargarlo en memoria)
+      for (const file of files) {
+        const link = document.createElement("a");
+        link.href = `/api/download?id=${file.id}`;
+        link.download = file.filename;
         document.body.appendChild(link);
         link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
+        link.remove();
+        await new Promise((r) => setTimeout(r, 800));
       }
-      
-      toast({
-        title: "¡Descarga Completada!",
-        description: `El archivo ha sido descargado exitosamente.`,
-        action: <CheckCircle className="text-green-500" />,
-      });
-
+      setDownload({ progress: 100, message: files.length > 1 ? "Archivos listos" : "Archivo listo", done: true });
     } catch (error) {
-      setIsDownloading(false);
-      setDownloadProgress(0);
-      setProgressText("");
-      console.error('[YoutubeDownloader] Download failed', error);
-      toast({
-        variant: "destructive",
-        title: "Download Failed",
-        description:
-          error instanceof Error
-            ? error.message
-            : "An unknown error occurred during download.",
-        action: <XCircle className="text-destructive-foreground" />,
-      });
-    }
-  };
-  
-  const videoFormats = React.useMemo(() => 
-    analysisResult?.formats.filter((f) => !f.endsWith("kbps")) || [],
-    [analysisResult]
-  );
-
-  const audioFormats = React.useMemo(() => 
-    analysisResult?.formats.filter((f) => f.endsWith("kbps")) || [],
-    [analysisResult]
-  );
-  
-  const resetState = () => {
-    form.reset();
-    setAnalysisResult(null);
-    setIsAnalyzing(false);
-    setIsDownloading(false);
-    setDownloadComplete(false);
-    setDownloadProgress(0);
-    setProgressText("");
-  }
-  
-  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
-    const pastedText = e.clipboardData.getData('text');
-    if (pastedText && formSchema.shape.youtubeUrl.safeParse(pastedText).success) {
-      form.setValue('youtubeUrl', pastedText, { shouldValidate: true });
-       setTimeout(() => {
-        formRef.current?.dispatchEvent(
-          new Event('submit', {cancelable: true, bubbles: true})
-        );
-      }, 0);
+      setDownload(null);
+      fail("La descarga falló", error instanceof Error ? error.message : "Error desconocido.");
     }
   };
 
-  const handleClearInput = () => {
-    form.setValue('youtubeUrl', '', { shouldValidate: true });
-    resetState();
-  };
-
-  const handlePasteFromClipboard = async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text && formSchema.shape.youtubeUrl.safeParse(text).success) {
-        form.setValue('youtubeUrl', text, { shouldValidate: true });
-        setTimeout(() => {
-          formRef.current?.dispatchEvent(
-            new Event('submit', {cancelable: true, bubbles: true})
-          );
-        }, 0);
-      } else if (text) {
-        form.setValue('youtubeUrl', text, { shouldValidate: true });
-      }
-    } catch (err) {
-      console.error('Failed to read clipboard contents: ', err);
-      toast({
-        variant: "destructive",
-        title: "Error al acceder al portapapeles",
-        description: "No se pudo acceder al contenido del portapapeles.",
-      });
-    }
-  };
-
-  React.useEffect(() => {
-    if (analysisResult) {
-      if (selectedFormatType === 'dual') {
-        // Para dual, establecer un valor especial que indique ambos formatos
-        setSelectedQuality('dual-best');
-      } else {
-        const formats = selectedFormatType === 'video' ? videoFormats : audioFormats;
-        if (formats.length > 0 && !formats.includes(selectedQuality)) {
-          setSelectedQuality(formats[0]);
-        }
-      }
-    }
-  }, [selectedFormatType, analysisResult, videoFormats, audioFormats, selectedQuality]);
+  const bestLabel = analysis?.heights[0] ? `Mejor disponible (${analysis.heights[0]}p)` : "Mejor disponible";
+  const kindIndex = KINDS.findIndex((k) => k.value === kind);
 
   return (
-    <Card className="w-full max-w-2xl shadow-2xl shadow-primary/10">
-      <CardHeader className="text-center relative">
-        <div className="absolute top-4 right-4">
-            <ThemeToggle />
+    <div className="material w-full max-w-xl rounded-[1.75rem] p-6 sm:p-8">
+      <header className="relative flex flex-col items-center text-center">
+        <div className="absolute -right-2 -top-2">
+          <ThemeToggle />
         </div>
-        <div className="mx-auto bg-primary text-primary-foreground p-3 rounded-full mb-2 w-fit">
-          <Youtube size={32} />
-        </div>
-        <CardTitle className="text-3xl font-bold tracking-tight">
-          StreamSiphon
-        </CardTitle>
-        <CardDescription className="text-muted-foreground">
-          Download YouTube videos and audio with ease.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Form {...form}>
-          <form ref={formRef} onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <FormField
-              control={form.control}
-              name="youtubeUrl"
-              render={({ field }) => (
-                <FormItem>
-                  <div className="flex gap-2">
-                    <FormControl>
-                      <div className="relative flex-1">
-                        <Input
-                          placeholder="Paste YouTube video URL here..."
-                          {...field}
-                          onPaste={handlePaste}
-                          className="h-12 text-base pr-20"
-                          disabled={isAnalyzing}
-                        />
-                        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0 hover:bg-muted"
-                            onClick={handlePasteFromClipboard}
-                            disabled={isAnalyzing}
-                            title="Pegar desde portapapeles"
-                          >
-                            <Clipboard className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0 hover:bg-muted"
-                            onClick={handleClearInput}
-                            disabled={isAnalyzing || !field.value}
-                            title="Limpiar input"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    </FormControl>
-                    <Button type="submit" size="lg" className="h-12" disabled={isAnalyzing}>
-                      {isAnalyzing ? (
-                        <Loader2 className="animate-spin" />
-                      ) : (
-                        <Search />
-                      )}
-                      <span className="sr-only">Analyze</span>
-                    </Button>
-                  </div>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </form>
-        </Form>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/icon.png" alt="" width={64} height={64} className="mb-4 size-16" />
+        <h1 className="text-4xl font-semibold leading-[1.05] tracking-[-0.022em]">StreamSiphon</h1>
+        <p className="mt-2 text-muted-foreground">Descarga video y audio de YouTube.</p>
+      </header>
 
-        {isAnalyzing && (
-            <div className="mt-6 space-y-4">
-                <Skeleton className="w-full h-48 rounded-lg" />
-                <Skeleton className="w-3/4 h-8" />
-                <Skeleton className="w-1/2 h-6" />
-            </div>
+      <form
+        className="mt-8"
+        noValidate
+        onSubmit={(e) => {
+          e.preventDefault();
+          analyze(url);
+        }}
+      >
+        <div className="relative">
+          <Input
+            type="url"
+            inputMode="url"
+            autoComplete="off"
+            aria-label="Enlace de YouTube"
+            aria-invalid={!!urlError}
+            aria-describedby={urlError ? "url-error" : undefined}
+            placeholder="Pega un enlace de YouTube"
+            value={url}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              setUrlError("");
+            }}
+            onPaste={(e) => {
+              const text = e.clipboardData.getData("text");
+              if (!isYoutubeUrl(text.trim())) return; // pegado normal
+              e.preventDefault();
+              setAndAnalyze(text);
+            }}
+            disabled={busy}
+            className="h-12 rounded-full border-transparent bg-muted pl-5 pr-24 text-base md:text-base"
+          />
+          <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 gap-1">
+            {url ? (
+              <Button type="button" variant="ghost" size="icon" className="size-9 rounded-full text-muted-foreground" onClick={reset} disabled={busy}>
+                <X />
+                <span className="sr-only">Borrar</span>
+              </Button>
+            ) : (
+              <Button type="button" variant="ghost" size="icon" className="size-9 rounded-full text-muted-foreground" onClick={pasteFromClipboard} disabled={busy}>
+                <ClipboardPaste />
+                <span className="sr-only">Pegar desde el portapapeles</span>
+              </Button>
+            )}
+            <Button type="submit" size="icon" className="size-9 rounded-full" disabled={busy || !url}>
+              {isAnalyzing ? <Loader2 className="animate-spin" /> : <ArrowRight />}
+              <span className="sr-only">Analizar</span>
+            </Button>
+          </div>
+        </div>
+        {urlError && (
+          <p id="url-error" role="alert" className="mt-2 pl-5 text-sm text-destructive">
+            {urlError}
+          </p>
         )}
+      </form>
 
-        {analysisResult && (
-          <div className="mt-6 space-y-6 animate-in fade-in-50 duration-500">
-            <Card className="overflow-hidden">
-              <div className="grid md:grid-cols-2">
-                <div className="relative aspect-video">
-                  <Image
-                    src={analysisResult.thumbnailUrl}
-                    alt={`Thumbnail for ${analysisResult.title}`}
-                    fill
-                    className="object-cover"
-                    sizes="(max-width: 768px) 100vw, 50vw"
-                  />
-                </div>
-                <div className="p-6 flex flex-col justify-center">
-                  <h3 className="font-semibold text-lg leading-tight line-clamp-2">
-                    {analysisResult.title}
-                  </h3>
-                  <p className="text-sm text-muted-foreground mt-2">
-                    Duration: {analysisResult.duration}
-                  </p>
-                </div>
-              </div>
-            </Card>
+      {isAnalyzing && (
+        <div className="mt-6 flex animate-pulse items-center gap-4" aria-label="Analizando video">
+          <div className="aspect-video w-36 shrink-0 rounded-xl bg-muted" />
+          <div className="flex-1 space-y-2">
+            <div className="h-4 w-4/5 rounded-full bg-muted" />
+            <div className="h-4 w-1/3 rounded-full bg-muted" />
+          </div>
+        </div>
+      )}
 
-            <Tabs value={selectedFormatType} onValueChange={(v) => setSelectedFormatType(v as "video" | "audio" | "dual")} className="w-full">
-              <TabsList className="grid w-full grid-cols-3 h-12">
-                <TabsTrigger value="video" className="h-full text-sm gap-1" disabled={videoFormats.length === 0}><Film size={16} />Video</TabsTrigger>
-                <TabsTrigger value="audio" className="h-full text-sm gap-1" disabled={audioFormats.length === 0}><Music size={16} />Audio</TabsTrigger>
-                <TabsTrigger value="dual" className="h-full text-sm gap-1" disabled={videoFormats.length === 0 || audioFormats.length === 0}><Package2 size={16} />Ambos</TabsTrigger>
-              </TabsList>
-              <TabsContent value="video">
-                <Select onValueChange={setSelectedQuality} value={selectedQuality} disabled={videoFormats.length === 0}>
-                  <SelectTrigger className="w-full h-12 text-base">
-                    <SelectValue placeholder="Select video quality" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {videoFormats.map((format) => (
-                      <SelectItem key={format} value={format} className="text-base">
-                        {format === 'best' ? 'Mejor disponible' : format}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-sm text-muted-foreground mt-2 flex items-center gap-2">
-                  <Info className="w-4 h-4 shrink-0" />
-                  Las calidades HD se combinan automáticamente con el mejor audio disponible
-                </p>
-              </TabsContent>
-              <TabsContent value="audio">
-                <Select onValueChange={setSelectedQuality} value={selectedQuality} disabled={audioFormats.length === 0}>
-                  <SelectTrigger className="w-full h-12 text-base">
-                    <SelectValue placeholder="Select audio quality" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {audioFormats.map((format) => (
-                      <SelectItem key={format} value={format} className="text-base">
-                        {format}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </TabsContent>
-              <TabsContent value="dual">
-                <div className="space-y-4">
-                  <div className="p-4 border rounded-lg bg-muted/50">
-                    <h4 className="font-semibold text-sm mb-2 text-center">Descarga Completa</h4>
-                    <div className="space-y-2 text-sm text-muted-foreground">
-                      <div className="flex items-center justify-between">
-                        <span>Video (mejor calidad):</span>
-                        <span className="font-medium text-foreground">{videoFormats[0] || 'No disponible'}</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span>Audio (mejor calidad):</span>
-                        <span className="font-medium text-foreground">{audioFormats[0] || 'No disponible'}</span>
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-sm text-muted-foreground flex items-center gap-2">
-                    <Info className="w-4 h-4 shrink-0" />
-                    Se descargarán 2 archivos: un video con audio y un archivo de audio puro, ambos en las mejores calidades disponibles
-                  </p>
-                </div>
-              </TabsContent>
-            </Tabs>
-            
-            {(isDownloading || downloadComplete) && (
-              <div className="space-y-2">
-                  <Progress value={downloadProgress} className="w-full h-3" />
-                  <p className="text-sm text-center text-muted-foreground">
-                    {progressText || (isDownloading ? "Preparando descarga..." : "Descarga completada")}
-                  </p>
-              </div>
+      {analysis && (
+        <div className="materialize mt-6 space-y-5">
+          <div className="flex items-center gap-4">
+            {analysis.thumbnailUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={analysis.thumbnailUrl}
+                alt=""
+                referrerPolicy="no-referrer"
+                className="aspect-video w-36 shrink-0 rounded-xl object-cover shadow-md"
+              />
+            )}
+            <div className="min-w-0">
+              <h2 className="line-clamp-2 font-semibold leading-snug">{analysis.title}</h2>
+              {analysis.duration && (
+                <p className="mt-1 text-sm tabular-nums text-muted-foreground">{analysis.duration}</p>
+              )}
+            </div>
+          </div>
+
+          {/* Control segmentado: el indicador se desliza hasta la opción elegida */}
+          <div role="radiogroup" aria-label="Formato" className="relative grid grid-cols-3 rounded-full bg-muted p-1">
+            <div
+              aria-hidden
+              className="segment-thumb absolute inset-y-1 left-1 w-[calc((100%-0.5rem)/3)] rounded-full bg-card shadow-sm transition-transform duration-300 ease-[var(--ease-out)] dark:bg-secondary-foreground/20"
+              style={{ transform: `translateX(${kindIndex * 100}%)` }}
+            />
+            {KINDS.map(({ value, label, icon: Icon }) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={kind === value}
+                disabled={isDownloading}
+                onClick={() => {
+                  setKind(value);
+                  setDownload(null);
+                }}
+                className={cn(
+                  "pressable relative z-10 flex h-9 items-center justify-center gap-1.5 rounded-full text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+                  kind === value ? "text-foreground" : "text-muted-foreground"
+                )}
+              >
+                <Icon className="size-4" />
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {kind !== "audio" && (
+              <Select value={height} onValueChange={setHeight} disabled={isDownloading}>
+                <SelectTrigger aria-label="Calidad de video" className={cn("h-11 rounded-xl text-base", kind === "video" && "sm:col-span-2")}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={BEST}>{bestLabel}</SelectItem>
+                  {analysis.heights.map((h) => (
+                    <SelectItem key={h} value={String(h)}>
+                      {h}p
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {kind !== "video" && (
+              <Select value={kbps} onValueChange={setKbps} disabled={isDownloading}>
+                <SelectTrigger aria-label="Calidad de audio" className={cn("h-11 rounded-xl text-base", kind === "audio" && "sm:col-span-2")}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {BITRATES.map((b) => (
+                    <SelectItem key={b} value={b}>
+                      MP3 · {b} kbps
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
           </div>
-        )}
-      </CardContent>
-      {analysisResult && (
-        <CardFooter className="flex-col gap-2">
-            {!downloadComplete ? (
-                 <Button onClick={handleDownload} size="lg" className="w-full h-12 text-lg" disabled={isDownloading || !selectedQuality}>
-                 {isDownloading ? (
-                   <>
-                     <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                     Downloading
-                   </>
-                 ) : (
-                   <>
-                     <Download className="mr-2 h-5 w-5" />
-                     {selectedFormatType === 'dual' ? 'Descargar Video + Audio' : `Download ${selectedQuality}`}
-                   </>
-                 )}
-               </Button>
-            ) : (
-                <Button onClick={resetState} size="lg" className="w-full h-12 text-lg" variant="secondary">
-                    Download Another
-                </Button>
-            )}
-        </CardFooter>
+
+          <p className="text-sm text-muted-foreground">
+            {kind === "video" && "Un archivo MP4 con video y audio."}
+            {kind === "audio" && "Un archivo MP3 solo con el audio."}
+            {kind === "dual" && "Dos archivos: el video en MP4 y el audio en MP3."}
+          </p>
+
+          {download && (
+            <div className="space-y-2" role="status" aria-live="polite">
+              <Progress value={download.progress} className="h-1.5 bg-muted" />
+              <p className="text-center text-sm tabular-nums text-muted-foreground">{download.message}</p>
+            </div>
+          )}
+
+          {download?.done ? (
+            <Button onClick={reset} variant="secondary" className="h-12 w-full rounded-full text-base">
+              <Check />
+              Descargar otro video
+            </Button>
+          ) : (
+            <Button onClick={handleDownload} className="h-12 w-full rounded-full text-base" disabled={isDownloading}>
+              {isDownloading ? <Loader2 className="animate-spin" /> : <Download />}
+              {isDownloading ? "Descargando…" : "Descargar"}
+            </Button>
+          )}
+        </div>
       )}
-    </Card>
+    </div>
   );
 }

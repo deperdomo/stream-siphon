@@ -1,21 +1,13 @@
 import type {Metadata} from 'next';
 import './globals.css';
-import { Inter } from 'next/font/google';
 import { Toaster } from "@/components/ui/toaster"
 import { ThemeProvider } from '@/components/app/theme-provider';
 
-const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
-
 export const metadata: Metadata = {
   title: 'StreamSiphon',
-  description: 'Download YouTube videos and audio with ease.',
-  icons: {
-    icon: [
-      { url: '/logo.png?v=3', sizes: '32x32', type: 'image/png' },
-      { url: '/logo.png?v=3', sizes: '16x16', type: 'image/png' },
-    ],
-    shortcut: '/logo.png?v=3',
-  },
+  description: 'Descarga video y audio de YouTube.',
+  // icon.png es cuadrado (256×256); el logo.png original (1344×768) se deformaba en la pestaña
+  icons: { icon: '/icon.png', apple: '/icon.png' },
 };
 
 export default function RootLayout({
@@ -24,14 +16,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable}`} suppressHydrationWarning>
-      <body className="font-body antialiased bg-background text-foreground">
-        <ThemeProvider
-            attribute="class"
-            defaultTheme="system"
-            enableSystem
-            disableTransitionOnChange
-        >
+    <html lang="es" suppressHydrationWarning>
+      <body className="font-body antialiased">
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           {children}
           <Toaster />
         </ThemeProvider>

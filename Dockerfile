@@ -8,7 +8,7 @@ RUN apk add --no-cache \
     python3 \
     py3-pip \
     ca-certificates \
-    && pip3 install --break-system-packages --no-cache-dir -U yt-dlp \
+    && pip3 install --break-system-packages --no-cache-dir -U "yt-dlp[default]" \
     && yt-dlp --version
 
 # Configurar directorio de trabajo
@@ -16,6 +16,7 @@ WORKDIR /app
 
 # Copiar archivos de dependencias
 COPY package*.json ./
+COPY scripts ./scripts
 
 # Instalar TODAS las dependencias (necesarias para build y postinstall scripts)
 RUN npm ci || npm install

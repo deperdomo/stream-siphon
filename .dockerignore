@@ -49,3 +49,4 @@ docs/
 *.log
 temp/
 tmp/
+bin/

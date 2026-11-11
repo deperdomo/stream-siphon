@@ -30,7 +30,9 @@
 ### Backend
 - **Runtime**: Node.js con Next.js API Routes
 - **Descarga**: yt-dlp-wrap + yt-dlp para extracción de YouTube
-- **Procesamiento de Video**: FFmpeg (fluent-ffmpeg)
+- **Procesamiento de Video**: FFmpeg (binario de `ffmpeg-static`, usado por yt-dlp)
+- **yt-dlp**: se descarga solo a `./bin` en `npm install` (Linux/macOS); en Windows se usa `yt-dlp.exe`. Ruta alternativa con `YT_DLP_PATH`
+- **Bloqueo anti-bot de YouTube**: si el servidor recibe "Sign in to confirm you're not a bot", define la variable `YT_DLP_COOKIES` con el contenido de un `cookies.txt` de YouTube
 - **Streams**: Node.js Streams para procesamiento eficiente
 - **Progress Tracking**: Server-Sent Events (SSE)
 

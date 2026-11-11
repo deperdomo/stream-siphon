@@ -48,7 +48,7 @@ requiredScripts.forEach(script => {
 
 // 3. Verificar dependencies críticas
 console.log('\n✓ Verificando dependencias críticas...');
-const criticalDeps = ['next', 'react', 'fluent-ffmpeg'];
+const criticalDeps = ['next', 'react', 'ffmpeg-static'];
 
 criticalDeps.forEach(dep => {
   if (!packageJson.dependencies[dep]) {

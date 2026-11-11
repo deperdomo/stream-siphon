@@ -8,6 +8,12 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  serverExternalPackages: ['ffmpeg-static'],
+  // Los binarios no se detectan solos al empaquetar las funciones (Vercel)
+  outputFileTracingIncludes: {
+    '/': ['./bin/yt-dlp', './node_modules/ffmpeg-static/ffmpeg'],
+    '/api/**/*': ['./bin/yt-dlp', './node_modules/ffmpeg-static/ffmpeg'],
+  },
   images: {
     remotePatterns: [
       {

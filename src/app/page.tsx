@@ -1,8 +1,11 @@
 import YoutubeDownloader from "@/components/app/youtube-downloader";
 
+// El análisis (server action) puede tardar si YouTube responde lento
+export const maxDuration = 60;
+
 export default function Home() {
   return (
-    <main className="flex min-h-screen w-full flex-col items-center justify-center bg-gray-100 dark:bg-gray-900 p-4 transition-colors">
+    <main className="flex min-h-dvh w-full flex-col items-center justify-center p-4">
       <YoutubeDownloader />
     </main>
   );
