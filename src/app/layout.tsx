@@ -8,10 +8,10 @@ export const metadata: Metadata = {
   description: 'Descarga video y audio de YouTube.',
   icons: {
     icon: [
-      { url: '/icon.svg?v=2', type: 'image/svg+xml' },
-      { url: '/icon.png?v=2', type: 'image/png', sizes: '256x256' },
+      { url: '/icon.svg?v=3', type: 'image/svg+xml' },
+      { url: '/icon.png?v=3', type: 'image/png', sizes: '256x256' },
     ],
-    apple: '/apple-icon.png?v=2',
+    apple: '/apple-icon.png?v=3',
   },
 };
 
