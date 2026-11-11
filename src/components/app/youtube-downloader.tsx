@@ -165,7 +165,7 @@ export default function YoutubeDownloader() {
           <ThemeToggle />
         </div>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/icon.png" alt="" width={64} height={64} className="mb-4 size-16" />
+        <img src="/icon.svg" alt="" width={72} height={72} className="mb-4 size-[4.5rem] rounded-[22.5%] shadow-lg shadow-primary/30" />
         <h1 className="text-4xl font-semibold leading-[1.05] tracking-[-0.022em]">StreamSiphon</h1>
         <p className="mt-2 text-muted-foreground">Descarga video y audio de YouTube.</p>
       </header>

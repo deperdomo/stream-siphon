@@ -6,8 +6,13 @@ import { ThemeProvider } from '@/components/app/theme-provider';
 export const metadata: Metadata = {
   title: 'StreamSiphon',
   description: 'Descarga video y audio de YouTube.',
-  // icon.png es cuadrado (256×256); el logo.png original (1344×768) se deformaba en la pestaña
-  icons: { icon: '/icon.png', apple: '/icon.png' },
+  icons: {
+    icon: [
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/icon.png', type: 'image/png', sizes: '256x256' },
+    ],
+    apple: '/apple-icon.png',
+  },
 };
 
 export default function RootLayout({
